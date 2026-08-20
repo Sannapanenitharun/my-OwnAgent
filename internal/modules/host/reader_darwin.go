@@ -199,10 +199,18 @@ func (r *darwinReader) ReadFilesystems(ctx context.Context) ([]FilesystemStats, 
 			ReadOnly:   st.Flags&mntRDONLY != 0,
 		}
 		bsize := uint64(st.Bsize)
+		if bsize == 0 && st.Iosize > 0 {
+			bsize = uint64(st.Iosize)
+		}
 		if bsize > 0 {
 			fs.TotalBytes = KnownU64(st.Blocks * bsize)
 			fs.FreeBytes = KnownU64(st.Bfree * bsize)
-			fs.AvailBytes = KnownU64(uint64(st.Bavail) * bsize)
+			avail := st.Bavail * bsize
+			// Snapshot / reserve accounting can report Bavail > Blocks; that is
+			// not usable as a capacity gauge, so leave Available unknown.
+			if st.Blocks > 0 && avail <= st.Blocks*bsize {
+				fs.AvailBytes = KnownU64(avail)
+			}
 			if st.Blocks >= st.Bfree {
 				fs.UsedBytes = KnownU64((st.Blocks - st.Bfree) * bsize)
 			}
@@ -210,8 +218,8 @@ func (r *darwinReader) ReadFilesystems(ctx context.Context) ([]FilesystemStats, 
 		if st.Files > 0 {
 			fs.TotalInode = KnownU64(st.Files)
 			fs.FreeInode = KnownU64(st.Ffree)
-			if st.Files >= uint64(st.Ffree) {
-				fs.UsedInode = KnownU64(st.Files - uint64(st.Ffree))
+			if st.Files >= st.Ffree {
+				fs.UsedInode = KnownU64(st.Files - st.Ffree)
 			}
 		}
 		out = append(out, fs)

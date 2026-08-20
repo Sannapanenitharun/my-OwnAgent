@@ -96,7 +96,10 @@ func platformSet() Set {
 }
 
 func (r *darwinReader) ListProcesses(ctx context.Context, opts ListOptions) (Listing, error) {
-	mib := [3]int32{ctlKern, kernProc, kernProcAll}
+	// namelen must be 4: CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0. A 3-element
+	// MIB is rejected or returns a buffer that is not a multiple of
+	// sizeof(kinfo_proc) on current XNU.
+	mib := [4]int32{ctlKern, kernProc, kernProcAll, 0}
 
 	// Two-call protocol: ask for the size, then read. The process table can grow
 	// between the calls, so the buffer is padded and a short read is accepted
@@ -104,7 +107,7 @@ func (r *darwinReader) ListProcesses(ctx context.Context, opts ListOptions) (Lis
 	// indefinitely.
 	var need uintptr
 	if _, _, errno := syscall.Syscall6(syscall.SYS___SYSCTL,
-		uintptr(unsafe.Pointer(&mib[0])), 3, 0,
+		uintptr(unsafe.Pointer(&mib[0])), 4, 0,
 		uintptr(unsafe.Pointer(&need)), 0, 0); errno != 0 {
 		return Listing{}, fmt.Errorf("sysctl kern.proc.all (size): %w", errno)
 	}
@@ -116,7 +119,7 @@ func (r *darwinReader) ListProcesses(ctx context.Context, opts ListOptions) (Lis
 	buf := make([]byte, need)
 	size := need
 	if _, _, errno := syscall.Syscall6(syscall.SYS___SYSCTL,
-		uintptr(unsafe.Pointer(&mib[0])), 3,
+		uintptr(unsafe.Pointer(&mib[0])), 4,
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(unsafe.Pointer(&size)), 0, 0); errno != 0 {
 		return Listing{}, fmt.Errorf("sysctl kern.proc.all: %w", errno)

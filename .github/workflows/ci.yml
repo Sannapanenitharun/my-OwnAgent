@@ -22,6 +22,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+      # go.sum is optional while the module has zero third-party deps; create an
+      # empty one so setup-go cache does not warn-and-fail in some runner images.
+      - run: |
+          if [ ! -f go.sum ]; then
+            printf '\n' > go.sum
+          fi
       - run: go test -race ./... -count=1
 
   # The platform readers are the parts that CANNOT be verified by
