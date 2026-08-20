@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/obsagent/observability-agent/internal/platform/darwinsysctl"
 )
 
 // Darwin collection uses sysctl and getfsstat from the standard library.
@@ -75,22 +77,18 @@ func (r *darwinReader) ReadCPU(context.Context, bool) (CPUStats, error) {
 func (r *darwinReader) ReadMemory(context.Context) (MemoryStats, error) {
 	// The standard library provides SysctlUint32 but not a 64-bit form, and
 	// hw.memsize exceeds 32 bits on any machine worth monitoring, so the raw
-	// bytes are decoded here.
-	raw, err := syscall.Sysctl("hw.memsize")
+	// bytes are decoded here. darwinsysctl restores the trailing NUL that
+	// syscall.Sysctl strips (common for little-endian memsize values).
+	b, err := darwinsysctl.Bytes("hw.memsize", 8)
 	if err != nil {
-		return MemoryStats{}, fmt.Errorf("sysctl hw.memsize: %w", err)
-	}
-	b := []byte(raw)
-	if len(b) < 8 {
-		return MemoryStats{}, fmt.Errorf("sysctl hw.memsize: short read (%d bytes)", len(b))
+		return MemoryStats{}, err
 	}
 	total := *(*uint64)(unsafe.Pointer(&b[0]))
 	out := MemoryStats{Total: KnownU64(total)}
 
 	// vm.swapusage returns struct xsw_usage{ xsu_total, xsu_avail, xsu_used
 	// uint64; xsu_pagesize uint32; ... }. Only the first three are read.
-	if raw, err := syscall.Sysctl("vm.swapusage"); err == nil && len(raw) >= 24 {
-		b := []byte(raw)
+	if b, err := darwinsysctl.Bytes("vm.swapusage", 24); err == nil {
 		swapTotal := *(*uint64)(unsafe.Pointer(&b[0]))
 		swapAvail := *(*uint64)(unsafe.Pointer(&b[8]))
 		swapUsed := *(*uint64)(unsafe.Pointer(&b[16]))
@@ -108,13 +106,9 @@ func (r *darwinReader) ReadMemory(context.Context) (MemoryStats, error) {
 //
 // }. Values are fixed-point and must be divided by fscale.
 func (r *darwinReader) ReadLoad(context.Context) (LoadStats, error) {
-	raw, err := syscall.Sysctl("vm.loadavg")
+	b, err := darwinsysctl.Bytes("vm.loadavg", 24)
 	if err != nil {
-		return LoadStats{}, fmt.Errorf("sysctl vm.loadavg: %w", err)
-	}
-	b := []byte(raw)
-	if len(b) < 24 {
-		return LoadStats{}, fmt.Errorf("sysctl vm.loadavg: short read (%d bytes)", len(b))
+		return LoadStats{}, err
 	}
 	ld0 := *(*uint32)(unsafe.Pointer(&b[0]))
 	ld1 := *(*uint32)(unsafe.Pointer(&b[4]))
@@ -148,8 +142,7 @@ func (r *darwinReader) ReadOS(context.Context) (OSInfo, error) {
 	}
 
 	// kern.boottime returns struct timeval{ int64 sec; int32 usec; }.
-	if raw, err := syscall.Sysctl("kern.boottime"); err == nil && len(raw) >= 8 {
-		b := []byte(raw)
+	if b, err := darwinsysctl.Bytes("kern.boottime", 8); err == nil {
 		sec := *(*int64)(unsafe.Pointer(&b[0]))
 		if sec > 0 {
 			info.BootTime = time.Unix(sec, 0)

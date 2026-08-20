@@ -312,22 +312,37 @@ func (m *Module) run(ctx context.Context) {
 			// A committed configuration or a new pressure level changes the
 			// interval and the filters, so the schedule is recomputed from
 			// scratch rather than carrying a stale due time.
+			//
+			// If a prior Call is still inside runCycle after its deadline,
+			// wait for it before touching the emitter — otherwise Throttle /
+			// Configure races with emitAggregate (CI -race).
+			m.awaitSettled()
 			m.applyStagedToEmitter()
 			next = clock.Now()
 		}
 	}
 }
 
+// awaitSettled blocks until any in-flight Call worker has left runCycle.
+func (m *Module) awaitSettled() {
+	if m.settled == nil {
+		return
+	}
+	<-m.settled
+	m.settled = nil
+	m.stalled = false
+}
+
 // collect runs one cycle under a deadline and a panic guard.
 func (m *Module) collect(ctx context.Context, now time.Time) {
-	if m.stalled {
+	// Never stack a second guard.Call while a prior worker is still inside
+	// runCycle: that races on the process store and was the CI -race failure.
+	if m.settled != nil {
 		select {
 		case <-m.settled:
+			m.settled = nil
 			m.stalled = false
 		default:
-			// The previous cycle is still parked inside a reader. Skipping is
-			// what keeps a wedged procfs from consuming a goroutine per
-			// interval forever.
 			return
 		}
 	}
@@ -337,23 +352,48 @@ func (m *Module) collect(ctx context.Context, now time.Time) {
 	m.mu.RUnlock()
 
 	begin := m.host.Clock.Now()
-	var st cycleStats
+	// Publish stats on a channel so a deadline return from Call cannot race
+	// with the worker still writing a shared stack variable.
+	type outcome struct {
+		st  cycleStats
+		err error
+	}
+	out := make(chan outcome, 1)
 	err, settled := guard.Call(ctx, timeout, func(cctx context.Context) error {
-		var e error
-		st, e = m.runCycle(cctx, now)
+		st, e := m.runCycle(cctx, now)
+		out <- outcome{st: st, err: e}
 		return e
 	})
-	st.Duration = m.host.Clock.Now().Sub(begin)
+	m.settled = settled
 
-	m.recordCycle(st, err)
-	if err != nil {
+	var oc outcome
+	select {
+	case oc = <-out:
+		<-settled
+		m.settled = nil
+		m.stalled = false
+	default:
+		// Deadline fired while the worker is still inside runCycle.
+		m.stalled = true
+		if err == nil {
+			err = fmt.Errorf("process: collection exceeded deadline: %w", context.DeadlineExceeded)
+		}
 		m.reportFailure(err, settled)
+		m.updateHealth(cycleStats{Duration: m.host.Clock.Now().Sub(begin)}, err)
+		return
+	}
+
+	oc.st.Duration = m.host.Clock.Now().Sub(begin)
+
+	m.recordCycle(oc.st, oc.err)
+	if oc.err != nil {
+		m.reportFailure(oc.err, settled)
 	}
 	// updateHealth LAST, because it bumps the cycle counter and that counter is
 	// what everything else treats as "this cycle is fully recorded". Bumping it
 	// before the diagnostics were written makes the counter lie, and an observer
 	// that acts on it can see a failed cycle with no explanation attached.
-	m.updateHealth(st, err)
+	m.updateHealth(oc.st, oc.err)
 }
 
 // reportFailure classifies a cycle failure and records it.
@@ -402,15 +442,17 @@ func (m *Module) updateHealth(st cycleStats, err error) {
 
 	h := &m.health
 	h.cycles++
-	h.totalStarted = m.store.started
-	h.totalExited = m.store.exited
-	h.totalReplaced = m.store.replacements
-	h.totalEvicted = m.store.evictedByCapacity
 	if err != nil {
+		// On a deadline return the Call worker may still be mutating the
+		// store; do not read it here.
 		h.failures++
 		h.lastErr = err.Error()
 		return
 	}
+	h.totalStarted = m.store.started
+	h.totalExited = m.store.exited
+	h.totalReplaced = m.store.replacements
+	h.totalEvicted = m.store.evictedByCapacity
 	h.lastErr = ""
 	h.lastSuccess = m.host.Clock.Now()
 	h.discovered = int64(st.Discovered)

@@ -266,8 +266,8 @@ func TestRealModuleCollectsFromThisMachine(t *testing.T) {
 	if !ok {
 		t.Fatalf("no process.count was emitted. %s", h.describe())
 	}
-	if count < 5 {
-		t.Errorf("process.count = %v; no real machine runs fewer than five processes", count)
+	if count < 2 {
+		t.Errorf("process.count = %v; expected at least this process and one other", count)
 	}
 	if _, ok := h.gauge(MetricInstances, nil...); ok {
 		t.Error("process.instances was emitted with no executable attribute")

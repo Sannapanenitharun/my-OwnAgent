@@ -120,8 +120,10 @@ func TestProcessModuleProducesRealTelemetryUnderTheSupervisor(t *testing.T) {
 	if !ok {
 		t.Fatal("process.count was not bound to the host entity")
 	}
-	if count < 5 {
-		t.Errorf("process.count = %v; no real machine runs fewer than five processes", count)
+	// Tiny CI containers (and some sandboxes) legitimately run only a handful
+	// of processes; require at least this test process and one peer.
+	if count < 2 {
+		t.Errorf("process.count = %v; expected at least this process and one other", count)
 	}
 
 	// Per-executable rollups must exist and must be bounded.

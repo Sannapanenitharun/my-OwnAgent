@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/obsagent/observability-agent/internal/platform/darwinsysctl"
 )
 
 // Darwin enumerates processes with one sysctl and decodes the result carefully.
@@ -226,13 +228,9 @@ func stateFromDarwin(c byte) State {
 
 func (r *darwinReader) ReadBootIdentity(context.Context) (BootIdentity, error) {
 	// kern.boottime returns struct timeval{ int64 sec; int32 usec; }.
-	raw, err := syscall.Sysctl("kern.boottime")
+	b, err := darwinsysctl.Bytes("kern.boottime", 8)
 	if err != nil {
-		return BootIdentity{}, fmt.Errorf("sysctl kern.boottime: %w", err)
-	}
-	b := []byte(raw)
-	if len(b) < 8 {
-		return BootIdentity{}, fmt.Errorf("sysctl kern.boottime: short read (%d bytes)", len(b))
+		return BootIdentity{}, err
 	}
 	sec := int64(le64(b))
 	if sec <= 0 {

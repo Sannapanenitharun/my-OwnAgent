@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/obsagent/observability-agent/internal/platform/darwinsysctl"
 )
 
 // Darwin discovery is DELIBERATELY NARROW, and the narrowness is a judgement
@@ -120,12 +122,8 @@ func (s *darwinSource) DiscoverHost(context.Context) (HostFacts, error) {
 
 // darwinBootTime reads kern.boottime, which returns struct timeval.
 func darwinBootTime() (time.Time, bool) {
-	raw, err := syscall.Sysctl("kern.boottime")
+	b, err := darwinsysctl.Bytes("kern.boottime", 8)
 	if err != nil {
-		return time.Time{}, false
-	}
-	b := []byte(raw)
-	if len(b) < 8 {
 		return time.Time{}, false
 	}
 	sec := int64(le64(b))
