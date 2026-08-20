@@ -135,7 +135,6 @@ func (m *Module) Start(ctx context.Context, h module.Host) error {
 	m.mu.Unlock()
 
 	m.resolveEntity(ctx)
-	m.recordUnsupported()
 
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	m.mu.Lock()
@@ -169,18 +168,6 @@ func (m *Module) resolveEntity(ctx context.Context) {
 	m.mu.Lock()
 	m.entityID = id
 	m.mu.Unlock()
-}
-
-func (m *Module) recordUnsupported() {
-	for _, u := range m.set.Unsupported {
-		m.host.Diagnostics.Record(diagnostics.Record{
-			Code:        diagnostics.CodeUnsupported,
-			Severity:    diagnostics.Warn,
-			Message:     u.Reason,
-			Remediation: "no action required; this source is unavailable in this environment",
-			Attrs:       map[string]string{AttrSource: u.Source.String()},
-		})
-	}
 }
 
 func (m *Module) Stop(ctx context.Context) error {

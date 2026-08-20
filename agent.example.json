@@ -72,6 +72,14 @@
       "enabled": true,
       "required": false
     },
+    "container": {
+      "enabled": true,
+      "required": false,
+      "settings": {
+        "interval": "15s",
+        "max_containers": "256"
+      }
+    },
     "logs": {
       "enabled": true,
       "required": false,
@@ -87,7 +95,7 @@
       "settings": {
         "interval": "30s",
         "timeout": "5s",
-        "targets": "ui=http://127.0.0.1:8181/,intake=http://127.0.0.1:8089/healthz",
+        "targets": "ui=http://127.0.0.1:8181/,intake=http://127.0.0.1:8090/healthz",
         "expect_status": "200"
       }
     },
@@ -96,6 +104,13 @@
       "required": false,
       "settings": {
         "listen": "127.0.0.1:4319"
+      }
+    },
+    "statsd": {
+      "enabled": true,
+      "required": false,
+      "settings": {
+        "listen": ""
       }
     }
   }

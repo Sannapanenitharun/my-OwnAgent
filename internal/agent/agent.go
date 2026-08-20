@@ -48,6 +48,9 @@ type Options struct {
 	Loader *config.Loader
 	// UIListen is the local status UI address. Empty, "off" or "-" disables it.
 	UIListen string
+	// Host carries IMDS/cloud facts for the local Hosts page. Empty fields
+	// mean unresolved and must not be invented.
+	Host localui.HostDetails
 }
 
 // Agent is the running observability agent.
@@ -232,6 +235,7 @@ func (a *Agent) startUI() error {
 			Telemetry:   a.opts.Ports.Telemetry,
 			Supervisor:  a.sup,
 			Diagnostics: a.diags,
+			Host:        a.opts.Host,
 		}).Handler(),
 	}
 	a.uiHTTP = srv

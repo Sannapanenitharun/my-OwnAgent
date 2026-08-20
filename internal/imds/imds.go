@@ -17,26 +17,36 @@ import (
 )
 
 const (
-	defaultBase  = "http://169.254.169.254"
-	tokenPath    = "/latest/api/token"
-	instancePath = "/latest/meta-data/instance-id"
-	azPath       = "/latest/meta-data/placement/availability-zone"
-	regionPath   = "/latest/meta-data/placement/region"
-	typePath     = "/latest/meta-data/instance-type"
-	amiPath      = "/latest/meta-data/ami-id"
-	identityPath = "/latest/dynamic/instance-identity/document"
-	tokenTTL     = "60"
+	defaultBase    = "http://169.254.169.254"
+	tokenPath      = "/latest/api/token"
+	instancePath   = "/latest/meta-data/instance-id"
+	azPath         = "/latest/meta-data/placement/availability-zone"
+	regionPath     = "/latest/meta-data/placement/region"
+	typePath       = "/latest/meta-data/instance-type"
+	amiPath        = "/latest/meta-data/ami-id"
+	identityPath   = "/latest/dynamic/instance-identity/document"
+	nameTagPath    = "/latest/meta-data/tags/instance/Name"
+	localHostPath  = "/latest/meta-data/local-hostname"
+	publicHostPath = "/latest/meta-data/public-hostname"
+	localIPv4Path  = "/latest/meta-data/local-ipv4"
+	publicIPv4Path = "/latest/meta-data/public-ipv4"
+	tokenTTL       = "60"
 )
 
 // Identity is what IMDS can assert about this machine. Every field may be
 // empty; empty means unresolved, not "unknown".
 type Identity struct {
-	InstanceID   string
-	AZ           string
-	Region       string
-	InstanceType string
-	AMIID        string
-	AccountID    string
+	InstanceID     string
+	InstanceName   string // EC2 Name tag when instance metadata tags are enabled
+	AZ             string
+	Region         string
+	InstanceType   string
+	AMIID          string
+	AccountID      string
+	LocalHostname  string
+	PublicHostname string
+	LocalIPv4      string
+	PublicIPv4     string
 }
 
 // ResourceAttributes returns OpenTelemetry resource attributes for this
@@ -62,6 +72,9 @@ func (id Identity) ResourceAttributes() []platform.Attr {
 	}
 	if id.AMIID != "" {
 		out = append(out, platform.A("host.image.id", id.AMIID))
+	}
+	if id.InstanceName != "" {
+		out = append(out, platform.A("host.name", id.InstanceName))
 	}
 	return out
 }
@@ -130,6 +143,21 @@ func (c *Client) fill(ctx context.Context, id Identity, token string) Identity {
 	}
 	if ami, err := c.get(ctx, amiPath, token); err == nil {
 		id.AMIID = ami
+	}
+	if name, err := c.get(ctx, nameTagPath, token); err == nil {
+		id.InstanceName = name
+	}
+	if h, err := c.get(ctx, localHostPath, token); err == nil {
+		id.LocalHostname = h
+	}
+	if h, err := c.get(ctx, publicHostPath, token); err == nil {
+		id.PublicHostname = h
+	}
+	if ip, err := c.get(ctx, localIPv4Path, token); err == nil {
+		id.LocalIPv4 = ip
+	}
+	if ip, err := c.get(ctx, publicIPv4Path, token); err == nil {
+		id.PublicIPv4 = ip
 	}
 	if acct, region, ami, typ := c.identityDocument(ctx, token); acct != "" {
 		id.AccountID = acct
@@ -233,6 +261,10 @@ func (c *Client) getRaw(ctx context.Context, path, token string, limit int64) ([
 }
 
 func validIMDSValue(path, v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" || len(v) > 255 {
+		return false
+	}
 	switch path {
 	case instancePath:
 		return strings.HasPrefix(v, "i-") && len(v) >= 10 && len(v) <= 32 && isAlnumHyphen(v)
@@ -244,9 +276,57 @@ func validIMDSValue(path, v string) bool {
 		return len(v) >= 2 && len(v) <= 32 && isAlnumHyphenDot(v)
 	case amiPath:
 		return strings.HasPrefix(v, "ami-") && len(v) >= 12 && len(v) <= 32 && isAlnumHyphen(v)
+	case nameTagPath:
+		// EC2 Name tag: printable, no control chars.
+		for _, r := range v {
+			if r < 32 || r == 127 {
+				return false
+			}
+		}
+		return true
+	case localHostPath, publicHostPath:
+		return isHostnameLike(v)
+	case localIPv4Path, publicIPv4Path:
+		return isIPv4(v)
 	default:
 		return false
 	}
+}
+
+func isHostnameLike(v string) bool {
+	if len(v) < 1 || len(v) > 253 {
+		return false
+	}
+	for _, r := range v {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isIPv4(v string) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || len(p) > 3 {
+			return false
+		}
+		n := 0
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return false
+			}
+			n = n*10 + int(r-'0')
+		}
+		if n > 255 {
+			return false
+		}
+	}
+	return true
 }
 
 func validAccountID(v string) bool {
@@ -308,14 +388,15 @@ func ResolveHostID(ctx context.Context, explicit string, c *Client) string {
 }
 
 // Resolve returns the full IMDS identity. explicit, when set, is used as
-// InstanceID and no IMDS query is made for that field — extra metadata is
-// still fetched so resource attributes can be populated on EC2.
+// InstanceID; extra metadata is still fetched from IMDS when reachable so the
+// UI and resource attributes can show region/type/name on EC2.
 func Resolve(ctx context.Context, explicit string, c *Client) Identity {
-	if v := strings.TrimSpace(explicit); v != "" {
-		return Identity{InstanceID: v}
-	}
 	if c == nil {
 		c = &Client{}
+	}
+	if v := strings.TrimSpace(explicit); v != "" {
+		token, _ := c.putToken(ctx)
+		return c.fill(ctx, Identity{InstanceID: v}, token)
 	}
 	id, err := c.Lookup(ctx)
 	if err != nil {

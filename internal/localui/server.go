@@ -20,6 +20,7 @@ type Server struct {
 	Telemetry   platform.Telemetry
 	Supervisor  *supervisor.Supervisor
 	Diagnostics *diagnostics.Recorder
+	Host        HostDetails
 }
 
 // Handler returns the mux. Bind it to localhost.
@@ -40,7 +41,7 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	st := BuildStatus(r.Context(), s.Identity, s.Telemetry, s.Supervisor, s.Diagnostics)
+	st := BuildStatus(r.Context(), s.Identity, s.Telemetry, s.Supervisor, s.Diagnostics, s.Host)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(st)
 }

@@ -159,6 +159,18 @@ func (e *Exporter) GaugeSnapshot() []platform.GaugePoint {
 	return platform.SnapshotGauges(e.inner)
 }
 
+func (e *Exporter) LogSnapshot() []platform.LogRecord {
+	return platform.SnapshotLogs(e.inner)
+}
+
+func (e *Exporter) TraceSnapshot() []platform.TracePayload {
+	return platform.SnapshotTraces(e.inner)
+}
+
+func (e *Exporter) EventSnapshot() []platform.Event {
+	return platform.SnapshotEvents(e.inner)
+}
+
 func (e *Exporter) flush(ctx context.Context) {
 	now := e.now()
 	e.exportMetrics(ctx, now)

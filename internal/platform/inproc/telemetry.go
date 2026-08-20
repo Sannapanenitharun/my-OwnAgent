@@ -149,8 +149,9 @@ func (t *Telemetry) EmitLog(rec platform.LogRecord) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.logs) >= t.maxLogs {
+		copy(t.logs, t.logs[1:])
+		t.logs = t.logs[:len(t.logs)-1]
 		t.droppedLogs++
-		return
 	}
 	t.logs = append(t.logs, rec)
 }
@@ -322,6 +323,11 @@ func (t *Telemetry) Events() []platform.Event {
 	return out
 }
 
+// EventSnapshot implements platform.EventSnapshotter.
+func (t *Telemetry) EventSnapshot() []platform.Event {
+	return t.Events()
+}
+
 // GaugeSnapshot implements platform.GaugeSnapshotter.
 func (t *Telemetry) GaugeSnapshot() []platform.GaugePoint {
 	t.mu.Lock()
@@ -376,6 +382,24 @@ func (t *Telemetry) HistogramSnapshot() []platform.HistogramPoint {
 			})
 		}
 	}
+	return out
+}
+
+// LogSnapshot implements platform.LogSnapshotter (peek, no drain).
+func (t *Telemetry) LogSnapshot() []platform.LogRecord {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]platform.LogRecord, len(t.logs))
+	copy(out, t.logs)
+	return out
+}
+
+// TraceSnapshot implements platform.TraceSnapshotter (peek, no drain).
+func (t *Telemetry) TraceSnapshot() []platform.TracePayload {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]platform.TracePayload, len(t.traces))
+	copy(out, t.traces)
 	return out
 }
 

@@ -68,12 +68,16 @@ make release        # per-platform binaries + SHA256SUMS
 | **logs module** (files, journald, Windows Event Log; redaction) | **built** |
 | **otel-engine** (OTLP/HTTP receiver on 127.0.0.1:4318) | **built** |
 | **httpcheck module** (HTTP up/latency probes) | **built** |
-| **obsagent-intake** (demo sink for native JSON) | **built** |
+| **container module** (Linux cgroup CPU/memory rollups by runtime) | **built** |
+| **statsd module** (optional UDP StatsD ingest) | **built** |
+| **secret scrubber** (central Telemetry wrapper on emit paths) | **built** |
+| **native export spool + circuit breaker** | **built** |
+| **obsagent-intake** (demo sink for native JSON; `:8090` installer) | **built** |
 | **OTLP/HTTP exporter** (metrics, logs, traces → existing backends) | **built** |
 | **native HTTPS JSON exporter** (Datadog-style first-party writer) | **built** |
 | adaptive-collection seam (`Throttleable`) | built; governor in Stage 13 |
 | network · ebpf · security · profiler | Stages 8–11 |
-| secret-scrubber · updater | Stages 6, 12 |
+| updater | Stage 12 |
 | resource governor | Stage 13 |
 | packaging and installers | Stage 15 |
 

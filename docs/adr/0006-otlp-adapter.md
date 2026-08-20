@@ -39,7 +39,13 @@ Replacing this adapter with a real Telemetry Plane is still a change to
 `buildPorts()` and `internal/platform` only. Modules do not import OTLP.
 
 The exporter bounds queues and drops under back-pressure. It retries transient
-HTTP failures with jitter; 4xx (except 429) is not retried.
+HTTP failures with jitter; 4xx (except 429) is not retried. The native exporter
+also trips a circuit breaker after repeated failures and optionally writes
+failed payloads to a disk spool (`OBSAGENT_EXPORT_SPOOL`, default
+`/var/lib/observability-agent/spool` on Unix) for later replay.
 
-gRPC `:4317` is out of scope. Native CloudWatch/X-Ray exporters are out of
-scope; reach those backends through an OTLP collector.
+gRPC `:4317` (receive and export) remains out of scope under the agent's
+zero-third-party-deps constraint: a correct gRPC stack needs generated stubs
+and a transport library. Reach gRPC backends through an OTLP collector, or
+send OTLP/HTTP to this agent on `:4318`. Native CloudWatch/X-Ray exporters are
+out of scope; reach those backends through an OTLP collector.

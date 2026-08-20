@@ -13,23 +13,29 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 
 	"github.com/obsagent/observability-agent/internal/agent"
 	"github.com/obsagent/observability-agent/internal/config"
 	"github.com/obsagent/observability-agent/internal/imds"
+	"github.com/obsagent/observability-agent/internal/localui"
 	"github.com/obsagent/observability-agent/internal/module"
+	"github.com/obsagent/observability-agent/internal/modules/container"
 	"github.com/obsagent/observability-agent/internal/modules/discovery"
 	"github.com/obsagent/observability-agent/internal/modules/host"
 	"github.com/obsagent/observability-agent/internal/modules/httpcheck"
 	"github.com/obsagent/observability-agent/internal/modules/logs"
 	"github.com/obsagent/observability-agent/internal/modules/otelengine"
 	"github.com/obsagent/observability-agent/internal/modules/process"
+	"github.com/obsagent/observability-agent/internal/modules/statsd"
 	"github.com/obsagent/observability-agent/internal/platform"
 	"github.com/obsagent/observability-agent/internal/platform/inproc"
 	"github.com/obsagent/observability-agent/internal/platform/native"
 	"github.com/obsagent/observability-agent/internal/platform/otlp"
+	"github.com/obsagent/observability-agent/internal/platform/scrub"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -81,7 +87,7 @@ func run(args []string, errOut *os.File) error {
 		return err
 	}
 
-	ports, err := buildPorts(cfg)
+	ports, hostDetails, err := buildPorts(cfg)
 	if err != nil {
 		return err
 	}
@@ -94,6 +100,7 @@ func run(args []string, errOut *os.File) error {
 		Logger:     logger,
 		Modules:    modules(),
 		UIListen:   *uiListen,
+		Host:       hostDetails,
 	})
 	if err != nil {
 		return err
@@ -125,9 +132,11 @@ func modules() []module.Module {
 		host.New(),
 		process.New(),
 		discovery.New(),
+		container.New(),
 		logs.New(),
 		httpcheck.New(),
 		otelengine.New(),
+		statsd.New(),
 	}
 }
 
@@ -140,9 +149,11 @@ var grants = map[string][]platform.Permission{
 	string(host.ID):       {host.PermissionRead},
 	string(process.ID):    {process.PermissionRead},
 	string(discovery.ID):  {discovery.PermissionRead},
+	string(container.ID):  {container.PermissionRead},
 	string(logs.ID):       {logs.PermissionRead},
 	string(httpcheck.ID):  {httpcheck.PermissionProbe},
 	string(otelengine.ID): {otelengine.PermissionReceive},
+	string(statsd.ID):     {statsd.PermissionReceive},
 }
 
 // buildPorts constructs the platform ports.
@@ -151,16 +162,33 @@ var grants = map[string][]platform.Permission{
 // export.native.endpoint is set, they are wrapped by the first-party HTTPS
 // JSON writer (Datadog-style). When export.otlp.endpoint is set, OTLP wraps
 // as well so both intakes can receive the same observations.
-func buildPorts(cfg config.Config) (platform.Ports, error) {
-	runtime := inproc.NewCapabilityRuntime()
+func buildPorts(cfg config.Config) (platform.Ports, localui.HostDetails, error) {
+	capRuntime := inproc.NewCapabilityRuntime()
 	for capability, perms := range grants {
-		runtime.Grant(capability, perms...)
+		capRuntime.Grant(capability, perms...)
 	}
 
 	ident := imds.Resolve(context.Background(), os.Getenv("OBSAGENT_HOST_ID"), nil)
+	hostDetails := localui.HostDetails{
+		InstanceID:     ident.InstanceID,
+		InstanceName:   ident.InstanceName,
+		Region:         ident.Region,
+		AZ:             ident.AZ,
+		InstanceType:   ident.InstanceType,
+		AMIID:          ident.AMIID,
+		AccountID:      ident.AccountID,
+		LocalHostname:  ident.LocalHostname,
+		PublicHostname: ident.PublicHostname,
+		LocalIPv4:      ident.LocalIPv4,
+		PublicIPv4:     ident.PublicIPv4,
+	}
+	if ident.InstanceID != "" {
+		hostDetails.CloudProvider = "aws"
+	}
 
 	mem := inproc.NewTelemetry()
-	var tel platform.Telemetry = mem
+	// Scrub credential-shaped substrings once, before any exporter sees them.
+	var tel platform.Telemetry = scrub.Wrap(mem)
 	resource := []platform.Attr{
 		platform.A("service.name", "observability-agent"),
 		platform.A("service.version", version),
@@ -168,6 +196,14 @@ func buildPorts(cfg config.Config) (platform.Ports, error) {
 	resource = append(resource, ident.ResourceAttributes()...)
 
 	if ep := strings.TrimSpace(cfg.Export.Native.Endpoint); ep != "" {
+		spool := strings.TrimSpace(os.Getenv("OBSAGENT_EXPORT_SPOOL"))
+		if spool == "" {
+			if runtime.GOOS == "windows" {
+				spool = filepath.Join(os.TempDir(), "obsagent-export-spool")
+			} else {
+				spool = filepath.Join("/var/lib/observability-agent", "spool")
+			}
+		}
 		exp := native.New(tel, native.Config{
 			Endpoint:    ep,
 			Headers:     cfg.Export.Native.Headers,
@@ -176,6 +212,7 @@ func buildPorts(cfg config.Config) (platform.Ports, error) {
 			MaxBatch:    cfg.Export.Native.MaxBatch,
 			Compression: cfg.Export.Native.Compression,
 			Resource:    resource,
+			SpoolDir:    spool,
 		})
 		exp.Start()
 		tel = exp
@@ -195,7 +232,7 @@ func buildPorts(cfg config.Config) (platform.Ports, error) {
 	}
 
 	return platform.Ports{
-		Runtime:   runtime,
+		Runtime:   capRuntime,
 		Telemetry: tel,
 		Identity: inproc.NewIdentity(
 			os.Getenv("OBSAGENT_AGENT_ID"),
@@ -203,7 +240,7 @@ func buildPorts(cfg config.Config) (platform.Ports, error) {
 			ident.InstanceID,
 		),
 		Clock: platform.NewSystemClock(),
-	}, nil
+	}, hostDetails, nil
 }
 
 func parseLevel(s string) (slog.Level, error) {

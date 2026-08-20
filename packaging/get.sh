@@ -81,7 +81,7 @@ write_config() {
     if [ -f "$TMP/agent.example.json" ]; then
       install -m 0644 "$TMP/agent.example.json" "$confdir/agent.json"
     else
-      printf '%s\n' '{"schema_version":1,"modules":{"host":{"enabled":true},"process":{"enabled":true},"logs":{"enabled":true},"otel-engine":{"enabled":true},"discovery":{"enabled":true}}}' > "$confdir/agent.json"
+      printf '%s\n' '{"schema_version":1,"modules":{"host":{"enabled":true},"process":{"enabled":true},"logs":{"enabled":true},"otel-engine":{"enabled":true},"discovery":{"enabled":true},"container":{"enabled":true},"statsd":{"enabled":true,"settings":{"listen":""}},"httpcheck":{"enabled":true,"settings":{"targets":"ui=http://127.0.0.1:8181/,intake=http://127.0.0.1:8090/healthz"}}}}' > "$confdir/agent.json"
       chmod 0644 "$confdir/agent.json"
     fi
   fi

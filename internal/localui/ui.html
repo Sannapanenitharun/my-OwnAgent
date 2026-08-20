@@ -6,106 +6,762 @@
   <title>Observability agent</title>
   <style>
     :root {
-      --bg: #0f1419; --panel: #171d24; --line: #2a333d; --text: #e8edf2;
-      --muted: #8b98a5; --accent: #3d8bfd; --ok: #3dd68c; --warn: #f5c542; --bad: #f07178;
+      --bg: #0b0f14; --panel: #121820; --line: #243041; --text: #e8edf2;
+      --muted: #8b98a5; --accent: #2dd4bf; --accent-soft: rgba(45,212,191,.12);
+      --ok: #34d399; --warn: #fbbf24; --bad: #f87171; --sidebar: #0e141b;
+      --bar: #1e2936; --grid: #1a2430;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; }
-    header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
-    h1 { margin: 0; font-size: 16px; font-weight: 600; }
-    header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-    main { padding: 20px 24px 40px; max-width: 1100px; }
-    h2 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 24px 0 10px; }
-    .pills { display: flex; gap: 8px; flex-wrap: wrap; }
-    .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
-    .ok { color: var(--ok); border-color: var(--ok); }
-    .warn { color: var(--warn); border-color: var(--warn); }
-    .bad { color: var(--bad); border-color: var(--bad); }
-    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
-    .card .n { color: var(--muted); font-size: 11px; }
-    .card .v { font-size: 22px; font-weight: 600; margin-top: 6px; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 13px/1.45 "Segoe UI", ui-sans-serif, system-ui, sans-serif; }
+    .shell { display: flex; min-height: 100%; }
+    nav {
+      width: 200px; flex-shrink: 0; background: var(--sidebar); border-right: 1px solid var(--line);
+      padding: 18px 10px; display: flex; flex-direction: column; gap: 2px;
+    }
+    .brand { font-weight: 650; font-size: 14px; padding: 4px 10px 16px; }
+    .brand span { display: block; font-weight: 400; font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .nav-sec { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 12px 10px 4px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 8px; border: 0; background: transparent;
+      width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+      color: var(--text); font: inherit;
+    }
+    .nav-item:hover { background: rgba(255,255,255,.04); }
+    .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600;
+      box-shadow: inset 3px 0 0 var(--accent); }
+    main { flex: 1; min-width: 0; padding: 16px 20px 40px; }
+    header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+    h1 { margin: 0; font-size: 18px; font-weight: 650; }
+    .sub { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .pill { font-size: 10px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); display: inline-block; }
+    .ok { color: var(--ok); border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.1); }
+    .warn { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
+    .bad { color: var(--bad); border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.1); }
+    .blue { color: #60a5fa; border-color: rgba(96,165,250,.4); background: rgba(96,165,250,.1); }
+    .host-head {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+      display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between;
+    }
+    .host-head .left { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .host-head h2 { margin: 0; font-size: 16px; }
+    .usage { min-width: 180px; }
+    .usage .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; display: flex; justify-content: space-between; }
+    .bar { height: 8px; background: var(--bar); border-radius: 999px; overflow: hidden; }
+    .bar > i { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #4ade80); border-radius: 999px; }
+    .bar.mem > i { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+    .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .chart-card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 8px;
+      min-height: 220px; display: flex; flex-direction: column;
+    }
+    .chart-card h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+    .chart-card canvas { width: 100%; height: 150px; flex: 1; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 6px; font-size: 10px; color: var(--muted); }
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
-    th { color: var(--muted); font-size: 12px; font-weight: 500; }
-    .idbox { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; background: #0f1620; }
+    tr:last-child td { border-bottom: 0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    .empty { color: var(--muted); padding: 16px 10px; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+    .filter input {
+      width: min(420px, 100%); padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+      font: inherit; background: #0f1620; color: var(--text); margin-bottom: 10px;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .chip {
+      border: 1px solid var(--line); background: #0f1620; color: var(--muted); border-radius: 999px;
+      padding: 4px 12px; font: inherit; cursor: pointer;
+    }
+    .chip:hover { color: var(--text); }
+    .chip.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+    .detail-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 18px;
+    }
+    .detail-grid .k { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+    .detail-grid .v { font-size: 13px; margin-top: 2px; word-break: break-all; }
+    .idbox { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
     .idbox dt { color: var(--muted); font-size: 11px; margin-top: 8px; }
     .idbox dd { margin: 2px 0 0; }
     .idbox dt:first-child { margin-top: 0; }
-    .empty { color: var(--muted); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .card .n { color: var(--muted); font-size: 11px; }
+    .card .v { font-size: 20px; font-weight: 650; margin-top: 4px; }
+    .map { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+    @media (max-width: 980px) { .chart-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>Observability agent</h1>
-      <p>This host only — identity, health, and live collectors</p>
-    </div>
-    <div id="health-pill"></div>
-  </header>
-  <main>
-    <h2>Identity</h2>
-    <dl class="idbox" id="identity"></dl>
-    <h2>Overview</h2>
-    <div class="cards" id="highlights"></div>
-    <h2>Modules</h2>
-    <table>
-      <thead><tr><th>Module</th><th>State</th><th>Health</th><th>Restarts</th><th>Message</th></tr></thead>
-      <tbody id="modules"></tbody>
-    </table>
-    <h2>Metrics</h2>
-    <table>
-      <thead><tr><th>Name</th><th>Labels</th><th>Value</th></tr></thead>
-      <tbody id="metrics"></tbody>
-    </table>
-    <h2>Diagnostics</h2>
-    <table>
-      <thead><tr><th>Severity</th><th>Code</th><th>Source</th><th>Message</th></tr></thead>
-      <tbody id="diags"></tbody>
-    </table>
-  </main>
+  <div class="shell">
+    <nav>
+      <div class="brand">Observability agent<span>This host</span></div>
+      <div class="nav-sec">Monitor</div>
+      <button class="nav-item active" data-view="host" type="button">Hosts</button>
+      <div class="nav-sec">Explore</div>
+      <button class="nav-item" data-view="metrics" type="button">Metrics</button>
+      <button class="nav-item" data-view="logs" type="button">Logs</button>
+      <button class="nav-item" data-view="traces" type="button">Traces</button>
+      <div class="nav-sec">Manage</div>
+      <button class="nav-item" data-view="modules" type="button">Modules</button>
+      <button class="nav-item" data-view="overview" type="button">Overview</button>
+    </nav>
+    <main>
+      <header class="top">
+        <div>
+          <h1 id="title">Hosts</h1>
+          <p class="sub" id="subtitle">Instance identity and health for this machine</p>
+        </div>
+        <div id="health-pill"></div>
+      </header>
+
+      <section class="view active" id="view-host">
+        <div class="host-head">
+          <div class="left">
+            <h2 id="host-name">—</h2>
+            <span class="pill ok" id="host-status">ACTIVE</span>
+            <span class="pill blue" id="host-os">LINUX</span>
+            <span class="pill" id="host-id"></span>
+          </div>
+          <div style="display:flex;gap:20px;flex-wrap:wrap">
+            <div class="usage" style="width:200px">
+              <div class="lbl"><span>CPU usage</span><span id="cpu-pct">—</span></div>
+              <div class="bar"><i id="cpu-bar" style="width:0%"></i></div>
+            </div>
+            <div class="usage" style="width:200px">
+              <div class="lbl"><span>Memory usage</span><span id="mem-pct">—</span></div>
+              <div class="bar mem"><i id="mem-bar" style="width:0%"></i></div>
+            </div>
+          </div>
+        </div>
+        <div class="host-details panel" style="margin-bottom:14px;padding:12px 14px">
+          <div class="detail-grid" id="host-details"></div>
+        </div>
+        <div class="panel" style="margin-bottom:14px">
+          <table>
+            <thead>
+              <tr>
+                <th>Hostname</th><th>Status</th><th>CPU</th><th>Memory</th><th>IOWait</th><th>Load Avg</th>
+              </tr>
+            </thead>
+            <tbody id="host-row"></tbody>
+          </table>
+        </div>
+        <p class="hint">Click the hostname to see containers, services, and applications running on this host.</p>
+      </section>
+
+      <section class="view" id="view-inventory">
+        <p class="hint"><button type="button" class="chip" id="back-to-hosts">← Back to Hosts</button></p>
+        <div class="host-head">
+          <div class="left">
+            <h2 id="inv-host-name">—</h2>
+            <span class="pill" id="inv-host-id"></span>
+          </div>
+        </div>
+        <div class="chips" id="inv-chips">
+          <button type="button" class="chip active" data-inv="containers">Containers</button>
+          <button type="button" class="chip" data-inv="services">Services</button>
+          <button type="button" class="chip" data-inv="processes">Applications</button>
+          <button type="button" class="chip" data-inv="endpoints">Endpoints</button>
+          <button type="button" class="chip" data-inv="other">Other</button>
+        </div>
+        <p class="hint" id="inv-count"></p>
+        <div class="panel"><table>
+          <thead><tr><th>Name</th><th>Kind</th><th>Detail</th><th>CPU</th><th>Memory (RSS)</th><th>Count</th></tr></thead>
+          <tbody id="inv-table"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-metrics">
+        <div class="host-head" style="margin-bottom:12px">
+          <div class="left">
+            <h2 id="metrics-host-name">Host metrics</h2>
+            <span class="pill" id="metrics-host-id"></span>
+          </div>
+          <div style="display:flex;gap:20px;flex-wrap:wrap">
+            <div class="usage" style="width:200px">
+              <div class="lbl"><span>CPU usage</span><span id="metrics-cpu-pct">—</span></div>
+              <div class="bar"><i id="metrics-cpu-bar" style="width:0%"></i></div>
+            </div>
+            <div class="usage" style="width:200px">
+              <div class="lbl"><span>Memory usage</span><span id="metrics-mem-pct">—</span></div>
+              <div class="bar mem"><i id="metrics-mem-bar" style="width:0%"></i></div>
+            </div>
+          </div>
+        </div>
+        <div class="chart-grid" id="charts"></div>
+        <p class="map">Charts use live agent series (<span class="mono">host.cpu.*</span>,
+          <span class="mono">host.memory.*</span>, <span class="mono">host.disk.*</span>,
+          <span class="mono">host.filesystem.*</span>, <span class="mono">host.network.*</span>,
+          <span class="mono">host.load.*</span>). History builds while this page is open (~30m).</p>
+        <p class="hint" style="margin-top:16px">Raw series table</p>
+        <div class="chips" id="metric-chips">
+          <button type="button" class="chip active" data-prefix="host.">Host</button>
+          <button type="button" class="chip" data-prefix="process.">Process</button>
+          <button type="button" class="chip" data-prefix="discovery.|container.">Discovery</button>
+          <button type="button" class="chip" data-prefix="agent.">Agent</button>
+          <button type="button" class="chip" data-prefix="">All</button>
+        </div>
+        <div class="filter"><input id="metrics-filter" placeholder="Extra filter (e.g. cpu, memory, disk)…" value="" /></div>
+        <p class="hint" id="metrics-count"></p>
+        <div class="panel"><table>
+          <thead><tr><th>Name</th><th>Labels</th><th>Value</th><th>Kind</th></tr></thead>
+          <tbody id="metrics"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-logs">
+        <p class="hint">Recent in-memory logs.</p>
+        <div class="filter"><input id="logs-filter" placeholder="Filter logs…" /></div>
+        <div class="panel"><table>
+          <thead><tr><th>Time</th><th>Severity</th><th>Body</th><th>Attrs</th></tr></thead>
+          <tbody id="logs"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-traces">
+        <p class="hint">OTLP payloads on this host.</p>
+        <div class="panel"><table>
+          <thead><tr><th>Signal</th><th>Content-Type</th><th>Bytes</th><th>Summary</th></tr></thead>
+          <tbody id="traces"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-modules">
+        <div class="panel"><table>
+          <thead><tr><th>Module</th><th>State</th><th>Health</th><th>Restarts</th><th>Message</th></tr></thead>
+          <tbody id="modules"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-overview">
+        <dl class="idbox" id="identity"></dl>
+        <div class="cards" id="highlights" style="margin-top:14px"></div>
+        <div class="panel" style="margin-top:14px"><table>
+          <thead><tr><th>Severity</th><th>Code</th><th>Source</th><th>Message</th></tr></thead>
+          <tbody id="diags"></tbody>
+        </table></div>
+      </section>
+    </main>
+  </div>
   <script>
     const $ = (id) => document.getElementById(id);
-    const pill = (t, c) => `<span class="pill ${c || ""}">${t}</span>`;
-    const fmt = (n) => n == null ? "—" : (Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(2));
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const pill = (t, c) => `<span class="pill ${c||""}">${esc(t)}</span>`;
+    const fmt = (n) => n == null || Number.isNaN(n) ? "—" : (Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(2));
     const healthClass = (h) => h === "healthy" ? "ok" : (h === "degraded" || h === "unknown" ? "warn" : "bad");
-    const orDash = (v) => v ? v : "unresolved";
+    const COLORS = ["#60a5fa","#34d399","#fbbf24","#f472b6","#a78bfa","#2dd4bf","#fb7185","#94a3b8","#f97316","#22d3ee"];
+    const MAX_POINTS = 600; // ~30m at 3s
+    let last = null;
+    let history = []; // {t, g:{}, c:{}}
+
+    const titles = {
+      host: ["Hosts", "Instance identity and health for this machine"],
+      inventory: ["Host inventory", "Containers, services, and applications on this host"],
+      metrics: ["Metrics", "Host CPU, memory, disk, network, load charts + series table"],
+      logs: ["Logs", "Recent log lines"],
+      traces: ["Traces", "OTLP payloads"],
+      modules: ["Modules", "Module health"],
+      overview: ["Overview", "Identity and diagnostics"],
+    };
+    let invTab = "containers";
+
+    function showView(view) {
+      document.querySelectorAll(".nav-item").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+      const nav = document.querySelector(`.nav-item[data-view="${view}"]`);
+      if (nav) nav.classList.add("active");
+      const section = $("view-" + view);
+      if (section) section.classList.add("active");
+      if (titles[view]) {
+        $("title").textContent = titles[view][0];
+        $("subtitle").textContent = titles[view][1];
+      }
+      render();
+      if (view === "metrics") requestAnimationFrame(renderCharts);
+      if (view === "inventory") renderInventory();
+    }
+
+    function fmtBytes(n) {
+      if (n == null || !(n > 0)) return "—";
+      const u = ["B","KB","MB","GB","TB"];
+      let v = n, i = 0;
+      while (v >= 1024 && i < u.length-1) { v /= 1024; i++; }
+      return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + " " + u[i];
+    }
+
+    function renderInventory() {
+      if (!$("inv-table")) return;
+      const inv = (last && last.inventory) || {};
+      const list = inv[invTab] || [];
+      const counts = inv.entity_counts || {};
+      $("inv-count").textContent = list.length
+        ? `${list.length} ${invTab}` + (Object.keys(counts).length ? ` · discovery: ${Object.entries(counts).map(([k,v]) => k+"="+v).join(", ")}` : "")
+        : `No ${invTab} observed yet. Wait for discovery/process collection cycles.`;
+      const showCPU = invTab === "processes";
+      $("inv-table").innerHTML = list.length
+        ? list.map(it => `<tr>
+            <td class="mono">${esc(it.name)}</td>
+            <td>${esc(it.kind||invTab)}</td>
+            <td class="mono">${esc(it.detail||"")}</td>
+            <td>${showCPU && it.cpu != null ? (it.cpu*100).toFixed(1)+"%" : "—"}</td>
+            <td>${showCPU ? fmtBytes(it.memory) : "—"}</td>
+            <td>${it.count ? fmt(it.count) : "—"}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="6" class="empty">Nothing in this category yet</td></tr>`;
+    }
+
+    const CHARTS = [
+      { id: "cpu", title: "CPU Usage", kind: "cpu", unit: "%" },
+      { id: "mem", title: "Memory Usage", kind: "mem", unit: "bytes" },
+      { id: "load", title: "System Load Average", kind: "load", unit: "" },
+      { id: "netb", title: "Network Usage (bytes/s)", kind: "rate",
+        series: [
+          { name: "host.network.rx_bytes", label: "receive" },
+          { name: "host.network.tx_bytes", label: "transmit" },
+        ], unit: "B/s" },
+      { id: "netp", title: "Network Usage (packets/s)", kind: "rate",
+        series: [
+          { name: "host.network.rx_packets", label: "receive" },
+          { name: "host.network.tx_packets", label: "transmit" },
+        ], unit: "pkt/s" },
+      { id: "nete", title: "Network Errors & Drops (/s)", kind: "rate",
+        series: [
+          { name: "host.network.rx_errors", label: "rx_errors" },
+          { name: "host.network.tx_errors", label: "tx_errors" },
+          { name: "host.network.rx_dropped", label: "rx_drops" },
+          { name: "host.network.tx_dropped", label: "tx_drops" },
+        ], unit: "/s" },
+      { id: "diskb", title: "Disk IO (bytes/s)", kind: "rate",
+        series: [
+          { name: "host.disk.read_bytes", label: "read" },
+          { name: "host.disk.write_bytes", label: "write" },
+        ], unit: "B/s" },
+      { id: "disko", title: "Disk Operations (/s)", kind: "rate",
+        series: [
+          { name: "host.disk.read_ops", label: "read_ops" },
+          { name: "host.disk.write_ops", label: "write_ops" },
+        ], unit: "ops/s" },
+      { id: "diskt", title: "Disk IO Time (s cumulative Δ)", kind: "rate",
+        series: [{ name: "host.disk.io_time_seconds", label: "io_time" }], unit: "s/s" },
+      { id: "fs", title: "Disk Usage (%) by Mountpoint", kind: "fs", unit: "%" },
+    ];
+
+    function keyOf(name, attrs) { return name + "\0" + (attrs || ""); }
+
+    function snapshotMaps(s) {
+      const g = {}, c = {};
+      (s.metrics || []).forEach(m => { g[keyOf(m.name, m.attrs)] = m.value; });
+      (s.counters || []).forEach(m => { c[keyOf(m.name, m.attrs)] = m.value; });
+      return { g, c };
+    }
+
+    function gauge(name, attrs) {
+      if (!last) return null;
+      const k = keyOf(name, attrs || "");
+      const m = (last.metrics || []).find(x => keyOf(x.name, x.attrs) === k);
+      if (m) return m.value;
+      if (!attrs) {
+        const hits = (last.metrics || []).filter(x => x.name === name);
+        return hits.length === 1 ? hits[0].value : null;
+      }
+      return null;
+    }
+    function gaugeState(state) {
+      const m = (last.metrics || []).find(x => x.name === "host.cpu.utilization" && (x.attrs||"").includes("state="+state));
+      return m ? m.value : null;
+    }
+
+    function pushHistory(s) {
+      const maps = snapshotMaps(s);
+      history.push({ t: Date.now(), g: maps.g, c: maps.c });
+      if (history.length > MAX_POINTS) history = history.slice(history.length - MAX_POINTS);
+    }
+
+    function seriesFromHistory(getter) {
+      return history.map(h => ({ t: h.t, v: getter(h) })).filter(p => p.v != null && !Number.isNaN(p.v));
+    }
+
+    function rateSeries(name) {
+      // Sum all attr variants, then delta/dt
+      const out = [];
+      for (let i = 1; i < history.length; i++) {
+        const a = history[i-1], b = history[i];
+        let va = 0, vb = 0, na = 0, nb = 0;
+        Object.keys(b.c).forEach(k => {
+          if (!k.startsWith(name + "\0")) return;
+          vb += b.c[k] || 0; nb++;
+          if (a.c[k] != null) { va += a.c[k]; na++; }
+        });
+        if (!nb) continue;
+        const dt = (b.t - a.t) / 1000;
+        if (dt <= 0) continue;
+        const d = vb - va;
+        out.push({ t: b.t, v: d < 0 ? 0 : d / dt });
+      }
+      return out;
+    }
+
+    function rateSeriesLabeled(name, labelAttrPrefix) {
+      // one series per attr group for interface/device — aggregate all for chart simplicity
+      return rateSeries(name);
+    }
+
+    function drawChart(canvas, seriesList, unit) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      canvas.width = Math.max(1, Math.floor(w * dpr));
+      canvas.height = Math.max(1, Math.floor(h * dpr));
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const pad = { l: 44, r: 8, t: 8, b: 22 };
+      const iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+      ctx.strokeStyle = "#1a2430";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.t + (ih * i) / 4;
+        ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + iw, y); ctx.stroke();
+      }
+      let minT = Infinity, maxT = -Infinity, minV = Infinity, maxV = -Infinity;
+      seriesList.forEach(s => s.points.forEach(p => {
+        if (p.t < minT) minT = p.t; if (p.t > maxT) maxT = p.t;
+        if (p.v < minV) minV = p.v; if (p.v > maxV) maxV = p.v;
+      }));
+      if (!isFinite(minT) || maxT === minT) { maxT = minT + 1; }
+      if (!isFinite(minV) || !isFinite(maxV)) { minV = 0; maxV = 1; }
+      if (minV === maxV) { minV = minV === 0 ? 0 : minV * 0.9; maxV = maxV === 0 ? 1 : maxV * 1.1; }
+      if (unit === "%" && maxV <= 1.5) { minV = 0; maxV = Math.max(1, maxV); }
+      if (unit === "%" && maxV > 1.5) { minV = 0; maxV = Math.max(100, maxV); }
+      const xOf = (t) => pad.l + ((t - minT) / (maxT - minT)) * iw;
+      const yOf = (v) => pad.t + ih - ((v - minV) / (maxV - minV)) * ih;
+      ctx.fillStyle = "#8b98a5";
+      ctx.font = "10px ui-sans-serif, system-ui";
+      ctx.textAlign = "right";
+      for (let i = 0; i <= 4; i++) {
+        const v = maxV - ((maxV - minV) * i) / 4;
+        ctx.fillText(formatAxis(v, unit), pad.l - 4, pad.t + (ih * i) / 4 + 3);
+      }
+      ctx.textAlign = "center";
+      const t0 = new Date(minT), t1 = new Date(maxT);
+      ctx.fillText(t0.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), pad.l, h - 6);
+      ctx.fillText(t1.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}), pad.l + iw, h - 6);
+      seriesList.forEach((s, si) => {
+        if (s.points.length < 2) return;
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        s.points.forEach((p, i) => {
+          const x = xOf(p.t), y = yOf(p.v);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      });
+    }
+
+    function formatAxis(v, unit) {
+      if (unit === "bytes" || unit === "B/s") {
+        const u = ["B","KB","MB","GB","TB"];
+        let n = Math.abs(v), i = 0;
+        while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+        return (v < 0 ? "-" : "") + n.toFixed(n >= 10 || i === 0 ? 0 : 1) + u[i];
+      }
+      if (unit === "%") return (v <= 1.5 ? (v * 100).toFixed(0) : v.toFixed(0)) + "%";
+      if (Math.abs(v) >= 100) return v.toFixed(0);
+      return v.toFixed(2);
+    }
+
+    function buildChartData(def) {
+      if (def.kind === "cpu") {
+        const states = ["idle","user","system","iowait","steal","busy"];
+        return states.map((st, i) => ({
+          label: st,
+          color: COLORS[i % COLORS.length],
+          points: seriesFromHistory(h => {
+            if (st === "idle") {
+              const busy = h.g[keyOf("host.cpu.utilization", "state=busy")];
+              return busy == null ? null : Math.max(0, 1 - busy);
+            }
+            return h.g[keyOf("host.cpu.utilization", "state="+st)];
+          }).map(p => ({ t: p.t, v: p.v })),
+        }));
+      }
+      if (def.kind === "mem") {
+        return [
+          { label: "used", color: COLORS[0], points: seriesFromHistory(h => h.g[keyOf("host.memory.used_bytes", "")]) },
+          { label: "available", color: COLORS[1], points: seriesFromHistory(h => h.g[keyOf("host.memory.available_bytes", "")]) },
+          { label: "total", color: COLORS[2], points: seriesFromHistory(h => h.g[keyOf("host.memory.total_bytes", "")]) },
+          { label: "swap.used", color: COLORS[3], points: seriesFromHistory(h => h.g[keyOf("host.memory.swap.used_bytes", "")]) },
+          { label: "swap.free", color: COLORS[4], points: seriesFromHistory(h => {
+            const t = h.g[keyOf("host.memory.swap.total_bytes", "")];
+            const u = h.g[keyOf("host.memory.swap.used_bytes", "")];
+            return (t != null && u != null) ? Math.max(0, t - u) : null;
+          }) },
+        ];
+      }
+      if (def.kind === "load") {
+        return [
+          { label: "1m", color: COLORS[0], points: seriesFromHistory(h => h.g[keyOf("host.load.1m", "")]) },
+          { label: "5m", color: COLORS[1], points: seriesFromHistory(h => h.g[keyOf("host.load.5m", "")]) },
+          { label: "15m", color: COLORS[2], points: seriesFromHistory(h => h.g[keyOf("host.load.15m", "")]) },
+        ];
+      }
+      if (def.kind === "fs") {
+        // one line per mountpoint for utilization
+        const mounts = new Set();
+        history.forEach(h => Object.keys(h.g).forEach(k => {
+          if (!k.startsWith("host.filesystem.utilization\0")) return;
+          mounts.add(k);
+        }));
+        return [...mounts].slice(0, 8).map((k, i) => {
+          const attrs = k.split("\0")[1] || "";
+          const mp = (attrs.match(/mountpoint=([^,]*)/) || [])[1] || attrs || "fs";
+          return {
+            label: mp,
+            color: COLORS[i % COLORS.length],
+            points: seriesFromHistory(h => {
+              const v = h.g[k];
+              return v == null ? null : v * 100;
+            }),
+          };
+        });
+      }
+      if (def.kind === "rate") {
+        return def.series.map((s, i) => ({
+          label: s.label,
+          color: COLORS[i % COLORS.length],
+          points: rateSeries(s.name),
+        }));
+      }
+      return [];
+    }
+
+    function ensureCharts() {
+      const root = $("charts");
+      if (root.dataset.ready) return;
+      root.innerHTML = CHARTS.map(c => `
+        <div class="chart-card">
+          <h3>${esc(c.title)}</h3>
+          <canvas id="chart-${c.id}"></canvas>
+          <div class="legend" id="legend-${c.id}"></div>
+        </div>`).join("");
+      root.dataset.ready = "1";
+    }
+
+    function renderCharts() {
+      ensureCharts();
+      CHARTS.forEach(def => {
+        const series = buildChartData(def).filter(s => s.points.length);
+        const legend = $("legend-" + def.id);
+        legend.innerHTML = series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join("")
+          || `<span class="empty">Waiting for samples…</span>`;
+        drawChart($("chart-" + def.id), series, def.unit);
+      });
+    }
+
+    function fmtUptime(sec) {
+      if (sec == null || !(sec > 0)) return "—";
+      const d = Math.floor(sec / 86400);
+      const h = Math.floor((sec % 86400) / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      if (d > 0) return d + "d " + h + "h";
+      if (h > 0) return h + "h " + m + "m";
+      return m + "m";
+    }
+
+    function renderHostHeader() {
+      const h = last.host || {};
+      const displayName = h.instance_name || h.hostname || last.hostname || "this-host";
+      $("host-name").textContent = displayName;
+      $("host-id").textContent = h.instance_id || (last.identity && last.identity.host_id) || "";
+      const busy = gaugeState("busy");
+      const mem = gauge("host.memory.utilization");
+      const iow = gaugeState("iowait");
+      const load = gauge("host.load.1m");
+      const cpuPct = busy == null ? null : busy * 100;
+      const memPct = mem == null ? null : mem * 100;
+      $("cpu-pct").textContent = cpuPct == null ? "—" : cpuPct.toFixed(0) + "%";
+      $("mem-pct").textContent = memPct == null ? "—" : memPct.toFixed(0) + "%";
+      $("cpu-bar").style.width = (cpuPct || 0) + "%";
+      $("mem-bar").style.width = (memPct || 0) + "%";
+      $("metrics-host-name").textContent = displayName;
+      $("metrics-host-id").textContent = h.instance_id || "";
+      $("metrics-cpu-pct").textContent = cpuPct == null ? "—" : cpuPct.toFixed(0) + "%";
+      $("metrics-mem-pct").textContent = memPct == null ? "—" : memPct.toFixed(0) + "%";
+      $("metrics-cpu-bar").style.width = (cpuPct || 0) + "%";
+      $("metrics-mem-bar").style.width = (memPct || 0) + "%";
+      $("host-status").className = "pill " + healthClass(last.health);
+      $("host-status").textContent = (last.health || "unknown").toUpperCase();
+      const osLabel = (h.platform || h.os || "linux").toUpperCase();
+      $("host-os").textContent = osLabel;
+      const fields = [
+        ["Instance name", h.instance_name],
+        ["Instance ID", h.instance_id],
+        ["Region", h.region],
+        ["Availability zone", h.availability_zone],
+        ["Instance type", h.instance_type],
+        ["AMI ID", h.ami_id],
+        ["Account ID", h.account_id],
+        ["Cloud", h.cloud_provider],
+        ["Hostname", h.hostname || last.hostname],
+        ["Local hostname", h.local_hostname],
+        ["Public hostname", h.public_hostname],
+        ["Private IPv4", h.local_ipv4],
+        ["Public IPv4", h.public_ipv4],
+        ["OS", h.os],
+        ["Platform", h.platform ? (h.platform + (h.platform_version ? " " + h.platform_version : "")) : ""],
+        ["Kernel", h.kernel_version],
+        ["Architecture", h.architecture],
+        ["Uptime", fmtUptime(h.uptime_seconds)],
+      ];
+      $("host-details").innerHTML = fields
+        .filter(f => f[1])
+        .map(f => `<div><div class="k">${esc(f[0])}</div><div class="v mono">${esc(f[1])}</div></div>`)
+        .join("") || `<div class="empty">Host details unresolved</div>`;
+      const bar = (pct, cls) => {
+        if (pct == null) return "—";
+        return `<div class="usage" style="min-width:120px"><div class="bar ${cls||""}"><i style="width:${Math.min(100,pct)}%"></i></div></div> ${pct.toFixed(0)}%`;
+      };
+      $("host-row").innerHTML = `<tr>
+        <td class="mono"><a href="#" id="host-link" style="color:var(--accent)">${esc(displayName)}</a></td>
+        <td>${pill("ACTIVE", "ok")}</td>
+        <td>${bar(cpuPct)}</td>
+        <td>${bar(memPct, "mem")}</td>
+        <td>${iow == null ? "—" : (iow * 100).toFixed(0) + "%"}</td>
+        <td>${load == null ? "—" : load.toFixed(2)}</td>
+      </tr>`;
+      const link = $("host-link");
+      if (link) {
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          const h = last.host || {};
+          $("inv-host-name").textContent = displayName;
+          $("inv-host-id").textContent = h.instance_id || "";
+          showView("inventory");
+          renderInventory();
+        });
+      }
+    }
+
+    document.querySelectorAll(".nav-item").forEach(btn => {
+      btn.addEventListener("click", () => showView(btn.dataset.view));
+    });
+    if ($("back-to-hosts")) {
+      $("back-to-hosts").addEventListener("click", () => showView("host"));
+    }
+    document.querySelectorAll("#inv-chips .chip").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#inv-chips .chip").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        invTab = btn.dataset.inv;
+        renderInventory();
+      });
+    });
+
+    let metricPrefix = "host.";
+
+    document.querySelectorAll("#metric-chips .chip").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#metric-chips .chip").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        metricPrefix = btn.dataset.prefix || "";
+        renderMetrics();
+      });
+    });
+
+    function matchPrefix(name, prefix) {
+      if (!prefix) return true;
+      return prefix.split("|").some(p => name.startsWith(p));
+    }
+
+    function renderMetrics() {
+      const q = ($("metrics-filter").value || "").toLowerCase();
+      const gauges = ((last && last.metrics) || []).map(m => ({...m, kind: "gauge"}));
+      const counters = ((last && last.counters) || []).map(m => ({...m, kind: "counter", value: m.value}));
+      const rows = [...gauges, ...counters]
+        .filter(m => matchPrefix(m.name, metricPrefix))
+        .filter(m => !q || (m.name + " " + (m.attrs||"")).toLowerCase().includes(q))
+        .sort((a, b) => a.name === b.name ? (a.attrs||"").localeCompare(b.attrs||"") : a.name.localeCompare(b.name));
+      $("metrics-count").textContent = rows.length
+        ? `Showing ${rows.length} series` + (metricPrefix ? ` (prefix ${metricPrefix.replace(/\|/g, " / ")})` : " (all)")
+        : "No series in this category yet — open Hosts and wait one collection cycle, or check Agent.";
+      $("metrics").innerHTML = rows.length
+        ? rows.map(m => `<tr><td class="mono">${esc(m.name)}</td><td class="mono">${esc(m.attrs||"")}</td><td>${fmt(m.value)}</td><td>${esc(m.kind)}</td></tr>`).join("")
+        : `<tr><td colspan="4" class="empty">No matching metrics. Try Host chip, or type host.cpu in the filter.</td></tr>`;
+    }
+    function renderLogs() {
+      const q = ($("logs-filter").value || "").toLowerCase();
+      const logs = (last && last.logs) || [];
+      const rows = logs.filter(l => !q || (l.body + " " + (l.attrs||"")).toLowerCase().includes(q));
+      $("logs").innerHTML = rows.length
+        ? rows.map(l => `<tr>
+            <td class="mono">${esc(l.timestamp ? new Date(l.timestamp).toISOString().replace("T"," ").slice(0,19) : "—")}</td>
+            <td>${pill(l.severity||"info", l.severity==="error"?"bad":(l.severity==="warn"?"warn":""))}</td>
+            <td class="mono">${esc(l.body)}</td>
+            <td class="mono">${esc(l.attrs||"")}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="empty">No logs yet</td></tr>`;
+    }
+    function renderTraces() {
+      const traces = (last && last.traces) || [];
+      $("traces").innerHTML = traces.length
+        ? traces.map(t => `<tr>
+            <td class="mono">${esc(t.signal||"traces")}</td>
+            <td class="mono">${esc(t.content_type||"")}</td>
+            <td>${t.bytes||0}</td>
+            <td class="mono">${esc(t.summary||"")}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="empty">No traces yet</td></tr>`;
+    }
+
+    function render() {
+      if (!last) return;
+      $("health-pill").innerHTML = pill(last.health || "unknown", healthClass(last.health));
+      renderHostHeader();
+      const id = last.identity || {};
+      $("identity").innerHTML = `
+        <dt>OS hostname</dt><dd class="mono">${esc(last.hostname || "—")}</dd>
+        <dt>Host id</dt><dd class="mono">${esc(id.host_id || "unresolved")}</dd>
+        <dt>Agent id</dt><dd class="mono">${esc(id.agent_id || "unresolved")}</dd>
+        <dt>Tenant id</dt><dd class="mono">${esc(id.tenant_id || "unresolved")}</dd>`;
+      const hl = last.highlights || [];
+      $("highlights").innerHTML = hl.length
+        ? hl.map(h => `<div class="card"><div class="n">${esc(h.label)}</div><div class="v">${fmt(h.value)}${h.unit ? " " + esc(h.unit) : ""}</div></div>`).join("")
+        : `<p class="empty">Waiting…</p>`;
+      const mods = last.modules || [];
+      $("modules").innerHTML = mods.length
+        ? mods.map(m => `<tr>
+            <td class="mono">${esc(m.id)}</td><td>${pill(m.state)}</td>
+            <td>${pill(m.health, healthClass(m.health))}</td>
+            <td>${m.restarts||0}</td><td>${esc(m.message||"")}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="5" class="empty">No modules</td></tr>`;
+      const diags = last.diagnostics || [];
+      $("diags").innerHTML = diags.length
+        ? diags.map(d => `<tr>
+            <td>${pill(d.severity, d.severity==="error"?"bad":(d.severity==="warn"?"warn":""))}</td>
+            <td class="mono">${esc(d.code)}</td><td class="mono">${esc(d.source)}</td><td>${esc(d.message)}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="empty">No diagnostics</td></tr>`;
+      renderMetrics(); renderLogs(); renderTraces(); renderInventory();
+      if ($("view-metrics").classList.contains("active")) renderCharts();
+    }
+
+    $("metrics-filter").addEventListener("input", renderMetrics);
+    $("logs-filter").addEventListener("input", renderLogs);
+    window.addEventListener("resize", () => { if ($("view-metrics").classList.contains("active")) renderCharts(); });
 
     async function refresh() {
       const s = await (await fetch("/api/status")).json();
-      $("health-pill").innerHTML = pill(s.health || "unknown", healthClass(s.health));
-      const id = s.identity || {};
-      $("identity").innerHTML = `
-        <dt>OS hostname</dt><dd class="mono">${s.hostname || "—"}</dd>
-        <dt>Host id (EC2 instance id when on AWS)</dt><dd class="mono">${orDash(id.host_id)}</dd>
-        <dt>Agent id</dt><dd class="mono">${orDash(id.agent_id)}</dd>
-        <dt>Tenant id</dt><dd class="mono">${orDash(id.tenant_id)}</dd>`;
-      const hl = s.highlights || [];
-      $("highlights").innerHTML = hl.length
-        ? hl.map(h => `<div class="card"><div class="n">${h.label}</div><div class="v">${fmt(h.value)}${h.unit ? " " + h.unit : ""}</div></div>`).join("")
-        : `<p class="empty">Waiting for the first collection cycle…</p>`;
-      const mods = s.modules || [];
-      $("modules").innerHTML = mods.length
-        ? mods.map(m => `<tr>
-            <td class="mono">${m.id}</td>
-            <td>${pill(m.state)}</td>
-            <td>${pill(m.health, healthClass(m.health))}</td>
-            <td>${m.restarts || 0}</td>
-            <td>${m.message || ""}</td>
-          </tr>`).join("")
-        : `<tr><td colspan="5" class="empty">No modules reporting</td></tr>`;
-      const metrics = s.metrics || [];
-      $("metrics").innerHTML = metrics.length
-        ? metrics.map(m => `<tr><td class="mono">${m.name}</td><td class="mono">${m.attrs || ""}</td><td>${fmt(m.value)}</td></tr>`).join("")
-        : `<tr><td colspan="3" class="empty">No gauges yet</td></tr>`;
-      const diags = s.diagnostics || [];
-      $("diags").innerHTML = diags.length
-        ? diags.map(d => `<tr>
-            <td>${pill(d.severity, d.severity === "error" ? "bad" : (d.severity === "warn" ? "warn" : ""))}</td>
-            <td class="mono">${d.code}</td><td class="mono">${d.source}</td><td>${d.message}</td>
-          </tr>`).join("")
-        : `<tr><td colspan="4" class="empty">No diagnostics</td></tr>`;
+      last = s;
+      pushHistory(s);
+      render();
     }
     refresh();
     setInterval(refresh, 3000);

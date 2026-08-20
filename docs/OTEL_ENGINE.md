@@ -18,7 +18,10 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 ```
 
-gRPC `:4317` is not implemented. eBPF is not implemented.
+gRPC `:4317` is not implemented and is blocked by the zero-third-party-deps
+policy (see [ADR-0006](adr/0006-otlp-adapter.md)). Use OTLP/HTTP on this
+receiver, or front the agent with a collector that speaks gRPC. eBPF is not
+implemented.
 
 ## Bounds
 

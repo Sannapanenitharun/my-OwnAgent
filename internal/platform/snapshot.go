@@ -42,6 +42,15 @@ type HistogramSnapshotter interface {
 	HistogramSnapshot() []HistogramPoint
 }
 
+// SnapshotCounters returns current counters if tel can snapshot them.
+func SnapshotCounters(tel Telemetry) []CounterPoint {
+	s, ok := tel.(CounterSnapshotter)
+	if !ok {
+		return nil
+	}
+	return s.CounterSnapshot()
+}
+
 // SnapshotGauges returns current gauges if tel can snapshot them.
 func SnapshotGauges(tel Telemetry) []GaugePoint {
 	s, ok := tel.(GaugeSnapshotter)
@@ -49,4 +58,49 @@ func SnapshotGauges(tel Telemetry) []GaugePoint {
 		return nil
 	}
 	return s.GaugeSnapshot()
+}
+
+// LogSnapshotter is an optional Telemetry capability for the local UI to show
+// recent log records without draining the exporter queues.
+type LogSnapshotter interface {
+	LogSnapshot() []LogRecord
+}
+
+// TraceSnapshotter is an optional Telemetry capability for the local UI to show
+// recent ingested trace payloads without draining exporter queues.
+type TraceSnapshotter interface {
+	TraceSnapshot() []TracePayload
+}
+
+// SnapshotLogs returns retained logs if tel can snapshot them.
+func SnapshotLogs(tel Telemetry) []LogRecord {
+	s, ok := tel.(LogSnapshotter)
+	if !ok {
+		return nil
+	}
+	return s.LogSnapshot()
+}
+
+// SnapshotTraces returns retained traces if tel can snapshot them.
+func SnapshotTraces(tel Telemetry) []TracePayload {
+	s, ok := tel.(TraceSnapshotter)
+	if !ok {
+		return nil
+	}
+	return s.TraceSnapshot()
+}
+
+// EventSnapshotter is an optional Telemetry capability for the local UI to show
+// recent discovery/process events without draining exporter queues.
+type EventSnapshotter interface {
+	EventSnapshot() []Event
+}
+
+// SnapshotEvents returns retained events if tel can snapshot them.
+func SnapshotEvents(tel Telemetry) []Event {
+	s, ok := tel.(EventSnapshotter)
+	if !ok {
+		return nil
+	}
+	return s.EventSnapshot()
 }

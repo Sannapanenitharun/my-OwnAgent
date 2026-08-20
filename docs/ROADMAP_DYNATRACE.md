@@ -44,19 +44,21 @@ not their binary.
 | — | Native exporter | OneAgent → cluster (proprietary) | **done** (`obsagent.v1`) |
 | — | OTLP export / receive | OTel Collector + app OTLP | **done** |
 | — | HTTP checks | Synthetic / extension checks | **done** (`httpcheck`) |
-| 6 | Secret scrubber | Redaction in pipeline | next |
+| 6 | Secret scrubber | Redaction in pipeline | **done** (`internal/platform/scrub`) |
+| — | Export spool / circuit breaker | Resilient native export | **done** |
+| — | Container metrics | cgroup rollups (no Docker socket) | **done** |
+| — | StatsD ingest | Optional UDP | **done** (off by default) |
 | 8 | Network | OneAgent network | planned |
 | 9–11 | eBPF / security / profiler | Deep inject / code-level | planned (hard) |
 | 12 | Updater | OneAgent auto-update | planned |
 | 13 | Resource governor | Agent self-throttling | seam exists |
-| 15 | Packaging / installers | Ansible, Operator, bootstrapper | partial (`install.sh`) |
+| 15 | Packaging / installers | Ansible, Operator, bootstrapper | partial (`get.sh`, `get-intake.sh`) |
 
 **Near-term order (Dynatrace-inspired, practical):**
 
-1. Harden EC2 install + intake (fleet story) — *you are here*
-2. Secret scrubber (Stage 6) before more signal volume
-3. Stronger discovery (containers, cloud relationships)
-4. Network module (Stage 8)
+1. Harden EC2 install + point export at `obsagent-intake :8090` (not Coroot `:8089`)
+2. Network module (Stage 8)
+3. Fleet packaging / updater (Stages 12, 15)
 5. Production intake / Telemetry Plane (replace demo)
 6. Updater (Stage 12)
 7. Only then eBPF / profiler (Stages 9–11)
