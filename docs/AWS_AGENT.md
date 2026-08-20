@@ -8,6 +8,18 @@ shape as Datadog's Agent: collect, batch, gzip, POST to an intake). OTLP is
 optional interoperability with Grafana Alloy, the OpenTelemetry Collector, or
 Datadog's OTLP intake.
 
+## One-line install (EC2)
+
+With a published GitHub release that includes `observability-agent-linux-amd64`
+and `observability-agent-linux-arm64`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Sannapanenitharun/my-OwnAgent/main/packaging/get.sh | sudo sh -s -- https://INTAKE_HOST:8080
+```
+
+That downloads the matching arch binary, writes `/etc/observability-agent/agent.env`,
+installs the systemd unit, and starts the agent.
+
 ## Many EC2s
 
 Install the **same** `observability-agent` binary and config on each instance.
