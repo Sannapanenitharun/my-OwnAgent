@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "agent": {
+    "shutdown_timeout": "30s",
+    "module_stop_timeout": "10s",
+    "module_start_timeout": "30s",
+    "health_interval": "15s",
+    "health_probe_timeout": "5s",
+    "diagnostics_retention": 256,
+    "restart": {
+      "enabled": true,
+      "initial_backoff": "1s",
+      "max_backoff": "5m",
+      "jitter_fraction": 0.2,
+      "max_restarts": 5,
+      "window": "10m"
+    }
+  },
+  "export": {
+    "native": {
+      "endpoint": "",
+      "timeout": "10s",
+      "interval": "5s",
+      "max_batch": 1000,
+      "compression": "gzip"
+    },
+    "otlp": {
+      "endpoint": "",
+      "protocol": "http/protobuf",
+      "timeout": "10s",
+      "interval": "10s",
+      "max_batch": 512
+    }
+  },
+  "modules": {
+    "host": {
+      "enabled": true,
+      "required": false,
+      "settings": {
+        "interval.cpu": "10s",
+        "interval.memory": "10s",
+        "interval.network": "10s",
+        "interval.disk": "30s",
+        "interval.filesystem": "60s",
+        "interval.os": "5m",
+        "filesystem.max": "64",
+        "network.max": "32"
+      }
+    },
+    "process": {
+      "enabled": true,
+      "required": false
+    },
+    "discovery": {
+      "enabled": true,
+      "required": false
+    },
+    "logs": {
+      "enabled": true,
+      "required": false,
+      "settings": {
+        "interval": "2s"
+      }
+    },
+    "httpcheck": {
+      "enabled": false,
+      "required": false,
+      "settings": {
+        "interval": "30s",
+        "timeout": "5s",
+        "targets": "ui=http://127.0.0.1:8181/",
+        "expect_status": "200"
+      }
+    },
+    "otel-engine": {
+      "enabled": true,
+      "required": false,
+      "settings": {
+        "listen": "127.0.0.1:4318"
+      }
+    }
+  }
+}

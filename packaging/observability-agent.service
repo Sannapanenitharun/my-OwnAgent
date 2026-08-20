@@ -1,0 +1,19 @@
+[Unit]
+Description=observability-agent — host metrics, logs and OTLP receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/observability-agent --config /etc/observability-agent/agent.json
+EnvironmentFile=-/etc/observability-agent/agent.env
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=40s
+# Collection is least-privilege. Do not run as root unless a later module
+# requires it; host/process/logs readers use world-readable OS interfaces.
+User=root
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

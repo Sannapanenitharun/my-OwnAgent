@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Observability agent</title>
+  <style>
+    :root {
+      --bg: #0f1419; --panel: #171d24; --line: #2a333d; --text: #e8edf2;
+      --muted: #8b98a5; --accent: #3d8bfd; --ok: #3dd68c; --warn: #f5c542; --bad: #f07178;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+    h1 { margin: 0; font-size: 16px; font-weight: 600; }
+    header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    main { padding: 20px 24px 40px; max-width: 1100px; }
+    h2 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 24px 0 10px; }
+    .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+    .ok { color: var(--ok); border-color: var(--ok); }
+    .warn { color: var(--warn); border-color: var(--warn); }
+    .bad { color: var(--bad); border-color: var(--bad); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+    .card .n { color: var(--muted); font-size: 11px; }
+    .card .v { font-size: 22px; font-weight: 600; margin-top: 6px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; font-weight: 500; }
+    .idbox { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+    .idbox dt { color: var(--muted); font-size: 11px; margin-top: 8px; }
+    .idbox dd { margin: 2px 0 0; }
+    .idbox dt:first-child { margin-top: 0; }
+    .empty { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Observability agent</h1>
+      <p>This host only — identity, health, and live collectors</p>
+    </div>
+    <div id="health-pill"></div>
+  </header>
+  <main>
+    <h2>Identity</h2>
+    <dl class="idbox" id="identity"></dl>
+    <h2>Overview</h2>
+    <div class="cards" id="highlights"></div>
+    <h2>Modules</h2>
+    <table>
+      <thead><tr><th>Module</th><th>State</th><th>Health</th><th>Restarts</th><th>Message</th></tr></thead>
+      <tbody id="modules"></tbody>
+    </table>
+    <h2>Metrics</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Labels</th><th>Value</th></tr></thead>
+      <tbody id="metrics"></tbody>
+    </table>
+    <h2>Diagnostics</h2>
+    <table>
+      <thead><tr><th>Severity</th><th>Code</th><th>Source</th><th>Message</th></tr></thead>
+      <tbody id="diags"></tbody>
+    </table>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const pill = (t, c) => `<span class="pill ${c || ""}">${t}</span>`;
+    const fmt = (n) => n == null ? "—" : (Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(2));
+    const healthClass = (h) => h === "healthy" ? "ok" : (h === "degraded" || h === "unknown" ? "warn" : "bad");
+    const orDash = (v) => v ? v : "unresolved";
+
+    async function refresh() {
+      const s = await (await fetch("/api/status")).json();
+      $("health-pill").innerHTML = pill(s.health || "unknown", healthClass(s.health));
+      const id = s.identity || {};
+      $("identity").innerHTML = `
+        <dt>OS hostname</dt><dd class="mono">${s.hostname || "—"}</dd>
+        <dt>Host id (EC2 instance id when on AWS)</dt><dd class="mono">${orDash(id.host_id)}</dd>
+        <dt>Agent id</dt><dd class="mono">${orDash(id.agent_id)}</dd>
+        <dt>Tenant id</dt><dd class="mono">${orDash(id.tenant_id)}</dd>`;
+      const hl = s.highlights || [];
+      $("highlights").innerHTML = hl.length
+        ? hl.map(h => `<div class="card"><div class="n">${h.label}</div><div class="v">${fmt(h.value)}${h.unit ? " " + h.unit : ""}</div></div>`).join("")
+        : `<p class="empty">Waiting for the first collection cycle…</p>`;
+      const mods = s.modules || [];
+      $("modules").innerHTML = mods.length
+        ? mods.map(m => `<tr>
+            <td class="mono">${m.id}</td>
+            <td>${pill(m.state)}</td>
+            <td>${pill(m.health, healthClass(m.health))}</td>
+            <td>${m.restarts || 0}</td>
+            <td>${m.message || ""}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="5" class="empty">No modules reporting</td></tr>`;
+      const metrics = s.metrics || [];
+      $("metrics").innerHTML = metrics.length
+        ? metrics.map(m => `<tr><td class="mono">${m.name}</td><td class="mono">${m.attrs || ""}</td><td>${fmt(m.value)}</td></tr>`).join("")
+        : `<tr><td colspan="3" class="empty">No gauges yet</td></tr>`;
+      const diags = s.diagnostics || [];
+      $("diags").innerHTML = diags.length
+        ? diags.map(d => `<tr>
+            <td>${pill(d.severity, d.severity === "error" ? "bad" : (d.severity === "warn" ? "warn" : ""))}</td>
+            <td class="mono">${d.code}</td><td class="mono">${d.source}</td><td>${d.message}</td>
+          </tr>`).join("")
+        : `<tr><td colspan="4" class="empty">No diagnostics</td></tr>`;
+    }
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>

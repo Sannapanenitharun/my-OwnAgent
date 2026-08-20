@@ -1,0 +1,54 @@
+#cloud-config
+# Example EC2 user-data for Amazon Linux 2023.
+# Replace the binary URL and OBSAGENT_EXPORT_ENDPOINT before launching.
+#
+# The same binary and config run on every instance. Hosts are distinguished
+# by the EC2 instance id from IMDS. No AWS access keys are required for
+# identity. The native intake URL is the backend credential surface
+# (optional headers in /etc/observability-agent/agent.env).
+
+runcmd:
+  - mkdir -p /etc/observability-agent /opt/observability-agent
+  - curl -fsSL -o /usr/bin/observability-agent "${AGENT_BINARY_URL}"
+  - chmod 0755 /usr/bin/observability-agent
+  - |
+      cat >/etc/observability-agent/agent.json <<'JSON'
+      {
+        "schema_version": 1,
+        "export": {
+          "native": {
+            "endpoint": "https://REPLACE-INTAKE",
+            "compression": "gzip"
+          }
+        },
+        "modules": {
+          "host": { "enabled": true },
+          "process": { "enabled": true },
+          "discovery": { "enabled": true },
+          "logs": { "enabled": true },
+          "otel-engine": {
+            "enabled": true,
+            "settings": { "listen": "127.0.0.1:4318" }
+          }
+        }
+      }
+      JSON
+  - printf 'OBSAGENT_EXPORT_ENDPOINT=https://REPLACE-INTAKE\n' >/etc/observability-agent/agent.env
+  - chmod 0600 /etc/observability-agent/agent.env
+  - |
+      cat >/etc/systemd/system/observability-agent.service <<'UNIT'
+      [Unit]
+      Description=observability-agent
+      After=network-online.target
+      [Service]
+      Type=simple
+      ExecStart=/usr/bin/observability-agent --config /etc/observability-agent/agent.json
+      EnvironmentFile=-/etc/observability-agent/agent.env
+      Restart=on-failure
+      RestartSec=5s
+      TimeoutStopSec=40s
+      [Install]
+      WantedBy=multi-user.target
+      UNIT
+  - systemctl daemon-reload
+  - systemctl enable --now observability-agent.service

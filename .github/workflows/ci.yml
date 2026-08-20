@@ -1,0 +1,120 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The race detector is the gate that could not be run on the development
+  # machine (no C toolchain). It is mandatory here. See docs/READINESS.md and
+  # docs/review/process-module-readiness.md §4.3 — the process module has a
+  # genuine cross-goroutine surface, so this job matters more than it did when
+  # the agent had only a supervisor.
+  race:
+    name: race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go test -race ./... -count=1
+
+  # The platform readers are the parts that CANNOT be verified by
+  # cross-compilation: they talk to a real kernel. This job exists so that the
+  # Linux and macOS readers are executed at least once per change, which as of
+  # Stage 3 had never happened on the development machine.
+  platform-readers:
+    name: platform readers ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: real host and process readers
+        run: go test ./internal/modules/... -run 'TestReal|TestPlatform|TestWindows|TestDarwin|TestLinux' -v -count=1
+
+  test:
+    name: test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: gofmt
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+      - run: go vet ./...
+      # Repeated runs surface order-dependent and timing-sensitive failures
+      # that a single pass hides.
+      - run: go test ./... -count=5
+
+  crosscompile:
+    name: cross-compile
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {goos: linux,   goarch: amd64}
+          - {goos: linux,   goarch: arm64}
+          - {goos: windows, goarch: amd64}
+          - {goos: windows, goarch: arm64}
+          - {goos: darwin,  goarch: amd64}
+          - {goos: darwin,  goarch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build ./...
+
+  benchmark:
+    name: benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go test ./internal/supervisor/ -run '^$' -bench . -benchmem -benchtime=500x
+      - run: go test ./internal/supervisor/ -run TestSteadyStateResourceFootprint -v -count=1
+      # Collection cost at 100 / 1K / 10K / 50K processes, plus high churn. The
+      # shape is what matters: allocations must stay flat as the process count
+      # grows by 500x.
+      - run: go test ./internal/modules/process/ -run '^$' -bench . -benchmem -benchtime=20x
+      - run: go test ./internal/modules/process/ -run 'TestStateTableFootprintAtScale|TestMemoryPerTrackedProcessIsBounded' -v -count=1
+
+  supply-chain:
+    name: supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      # The agent ships into a privileged process on customer hosts. Every
+      # dependency is an SBOM entry and a supply-chain surface, so the
+      # dependency set is asserted to be empty rather than merely reviewed.
+      - run: go test ./internal/architecture/ -run 'TestNoThirdPartyDependencies|TestGoModDeclaresNoRequirements' -v
+      - run: go mod verify
