@@ -42,14 +42,31 @@
         "interval.network": "10s",
         "interval.disk": "30s",
         "interval.filesystem": "60s",
+        "interval.load": "10s",
         "interval.os": "5m",
-        "filesystem.max": "64",
-        "network.max": "32"
+        "filesystem.max": "128",
+        "network.max": "64",
+        "disk.max": "64",
+        "filesystem.inodes": "true"
       }
     },
     "process": {
       "enabled": true,
-      "required": false
+      "required": false,
+      "settings": {
+        "interval": "30s",
+        "max_processes": "4096",
+        "max_executables": "4096",
+        "max_tracked": "16384",
+        "max_events_per_cycle": "2000",
+        "collect.cpu": "true",
+        "collect.memory": "true",
+        "collect.threads": "true",
+        "collect.state": "true",
+        "collect.io": "true",
+        "collect.open_files": "true",
+        "collect.executable_path": "true"
+      }
     },
     "discovery": {
       "enabled": true,
@@ -59,16 +76,18 @@
       "enabled": true,
       "required": false,
       "settings": {
-        "interval": "2s"
+        "interval": "2s",
+        "paths": "/var/log/syslog,/var/log/auth.log,/var/log/cloud-init.log,/var/log/kern.log,/var/log/ubuntu-advantage.log",
+        "disable.eventlog": "true"
       }
     },
     "httpcheck": {
-      "enabled": false,
+      "enabled": true,
       "required": false,
       "settings": {
         "interval": "30s",
         "timeout": "5s",
-        "targets": "ui=http://127.0.0.1:8181/",
+        "targets": "ui=http://127.0.0.1:8181/,intake=http://127.0.0.1:8089/healthz",
         "expect_status": "200"
       }
     },
@@ -76,7 +95,7 @@
       "enabled": true,
       "required": false,
       "settings": {
-        "listen": "127.0.0.1:4318"
+        "listen": "127.0.0.1:4319"
       }
     }
   }

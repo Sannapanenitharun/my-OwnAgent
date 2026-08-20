@@ -389,11 +389,11 @@ func (m *Module) Health(context.Context) health.Report {
 		return health.UnhealthyReport("every available log source is failing")
 	case failing > 0:
 		return health.DegradedReport(fmt.Sprintf("%d log sources are failing", failing))
-	case available < len(AllSources):
-		return health.DegradedReport(fmt.Sprintf("%d of %d log sources are unavailable on this platform", len(AllSources)-available, len(AllSources)))
 	case m.entityID == "":
 		return health.DegradedReport("host entity ID is unresolved")
 	default:
+		// Platform-absent sources (e.g. Windows Event Log on Linux) are not a
+		// health fault; they are recorded in capabilities, not here.
 		return health.OK("log sources are collecting")
 	}
 }
