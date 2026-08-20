@@ -189,7 +189,9 @@ func decodeExternProc(rec []byte) (Info, bool) {
 		return Info{}, false
 	}
 	pid := int32(le32(rec[offPID:]))
-	if pid < 0 {
+	// PID 0 is the Darwin kernel_task entry in kinfo_proc; it is not a
+	// user-space process and fails the agent's "positive PID" invariant.
+	if pid <= 0 {
 		return Info{}, false
 	}
 
