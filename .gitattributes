@@ -1,0 +1,17 @@
+# Keep source files LF so gofmt and CI match on Windows runners
+# (core.autocrlf would otherwise turn every .go file into a gofmt failure).
+* text=auto eol=lf
+*.go text eol=lf
+*.mod text eol=lf
+*.sum text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+
+# Windows scripts may still use CRLF if edited locally; keep LF in git.
+*.bat text eol=crlf
+*.cmd text eol=crlf

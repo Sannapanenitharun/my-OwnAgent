@@ -101,26 +101,32 @@ func (r *darwinReader) ReadMemory(context.Context) (MemoryStats, error) {
 	return out, nil
 }
 
-// ReadLoad reads vm.loadavg, which returns struct loadavg{ fixpt_t ldavg[3];
-// long fscale; }. fixpt_t is uint32 and the values must be divided by fscale.
+// ReadLoad reads vm.loadavg, which returns struct loadavg {
+//
+//	fixpt_t ldavg[3]; // 3×uint32 = 12 bytes
+//	long    fscale;   // 8 bytes at offset 16 on LP64 (4 bytes padding)
+//
+// }. Values are fixed-point and must be divided by fscale.
 func (r *darwinReader) ReadLoad(context.Context) (LoadStats, error) {
 	raw, err := syscall.Sysctl("vm.loadavg")
 	if err != nil {
 		return LoadStats{}, fmt.Errorf("sysctl vm.loadavg: %w", err)
 	}
 	b := []byte(raw)
-	if len(b) < 20 {
+	if len(b) < 24 {
 		return LoadStats{}, fmt.Errorf("sysctl vm.loadavg: short read (%d bytes)", len(b))
 	}
-	ld := (*[3]uint32)(unsafe.Pointer(&b[0]))
-	scale := float64(*(*uint64)(unsafe.Pointer(&b[8])))
+	ld0 := *(*uint32)(unsafe.Pointer(&b[0]))
+	ld1 := *(*uint32)(unsafe.Pointer(&b[4]))
+	ld2 := *(*uint32)(unsafe.Pointer(&b[8]))
+	scale := float64(*(*int64)(unsafe.Pointer(&b[16])))
 	if scale == 0 {
 		return LoadStats{}, fmt.Errorf("sysctl vm.loadavg: zero scale")
 	}
 	return LoadStats{
-		Load1:  KnownF64(float64(ld[0]) / scale),
-		Load5:  KnownF64(float64(ld[1]) / scale),
-		Load15: KnownF64(float64(ld[2]) / scale),
+		Load1:  KnownF64(float64(ld0) / scale),
+		Load5:  KnownF64(float64(ld1) / scale),
+		Load15: KnownF64(float64(ld2) / scale),
 	}, nil
 }
 

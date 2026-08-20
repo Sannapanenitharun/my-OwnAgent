@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"os"
 	"runtime"
 	"testing"
@@ -17,6 +18,18 @@ func platformCtx(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+func mustList(t *testing.T, set Set) Listing {
+	t.Helper()
+	listing, err := set.Lister.ListProcesses(platformCtx(t), ListOptions{})
+	if err != nil {
+		if errors.Is(err, ErrUnsupported) {
+			t.Skipf("process enumeration unsupported on this kernel: %v", err)
+		}
+		t.Fatalf("ListProcesses: %v", err)
+	}
+	return listing
 }
 
 func TestPlatformSetDeclaresEveryFeatureHonestly(t *testing.T) {
@@ -39,10 +52,7 @@ func TestRealEnumerationFindsThisProcess(t *testing.T) {
 		t.Skipf("process enumeration is unsupported on %s", runtime.GOOS)
 	}
 
-	listing, err := set.Lister.ListProcesses(platformCtx(t), ListOptions{})
-	if err != nil {
-		t.Fatalf("ListProcesses: %v", err)
-	}
+	listing := mustList(t, set)
 	if len(listing.Processes) == 0 {
 		t.Fatal("enumeration returned no processes at all")
 	}
@@ -89,10 +99,7 @@ func TestRealEnumerationValuesArePlausible(t *testing.T) {
 	if !set.Has(FeatureEnumeration) {
 		t.Skipf("process enumeration is unsupported on %s", runtime.GOOS)
 	}
-	listing, err := set.Lister.ListProcesses(platformCtx(t), ListOptions{})
-	if err != nil {
-		t.Fatalf("ListProcesses: %v", err)
-	}
+	listing := mustList(t, set)
 
 	var withRSS, withCPU, withThreads, withState int
 	for _, p := range listing.Processes {
@@ -155,6 +162,9 @@ func TestRealPreFilterIsHonoured(t *testing.T) {
 		Accept: func(p PID) bool { return p == self },
 	})
 	if err != nil {
+		if errors.Is(err, ErrUnsupported) {
+			t.Skipf("process enumeration unsupported on this kernel: %v", err)
+		}
 		t.Fatalf("ListProcesses: %v", err)
 	}
 	if len(listing.Processes) != 1 || listing.Processes[0].PID != self {
