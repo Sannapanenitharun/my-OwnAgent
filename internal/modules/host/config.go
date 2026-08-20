@@ -73,8 +73,8 @@ func defaultIntervals() map[Source]time.Duration {
 func defaultFilesystemTypeExclude() []string {
 	return []string{
 		"autofs", "binfmt_misc", "bpf", "cgroup", "cgroup2", "configfs", "debugfs",
-		"devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs", "mqueue",
-		"nsfs", "overlay", "proc", "pstore", "ramfs", "rpc_pipefs", "securityfs",
+		"devfs", "devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs", "mqueue",
+		"nsfs", "nullfs", "overlay", "proc", "pstore", "ramfs", "rpc_pipefs", "securityfs",
 		"selinuxfs", "squashfs", "sysfs", "tracefs",
 	}
 }

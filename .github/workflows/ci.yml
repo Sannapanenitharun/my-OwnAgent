@@ -47,6 +47,9 @@ jobs:
         with:
           go-version: '1.26'
       - name: real host and process readers
+        env:
+          # Match the shipped agent: Darwin readers are written for cgo-free builds.
+          CGO_ENABLED: "0"
         run: go test ./internal/modules/... -run 'TestReal|TestPlatform|TestWindows|TestDarwin|TestLinux' -v -count=1
 
   test:
@@ -78,6 +81,8 @@ jobs:
       # Repeated runs surface order-dependent and timing-sensitive failures
       # that a single pass hides.
       - run: go test ./... -count=5
+        env:
+          CGO_ENABLED: "0"
 
   crosscompile:
     name: cross-compile

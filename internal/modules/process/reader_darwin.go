@@ -98,46 +98,23 @@ func platformSet() Set {
 }
 
 func (r *darwinReader) ListProcesses(ctx context.Context, opts ListOptions) (Listing, error) {
-	// namelen must be 4: CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0. A 3-element
-	// MIB is rejected or returns a buffer that is not a multiple of
-	// sizeof(kinfo_proc) on current XNU.
-	mib := [4]int32{ctlKern, kernProc, kernProcAll, 0}
-
-	// Two-call protocol: ask for the size, then read. The process table can grow
-	// between the calls, so the buffer is padded and a short read is accepted
-	// rather than retried in a loop that a forking host could keep alive
-	// indefinitely.
-	var need uintptr
-	if _, _, errno := syscall.Syscall6(syscall.SYS___SYSCTL,
-		uintptr(unsafe.Pointer(&mib[0])), 4, 0,
-		uintptr(unsafe.Pointer(&need)), 0, 0); errno != 0 {
-		return Listing{}, fmt.Errorf("sysctl kern.proc.all (size): %w", errno)
+	// Prefer the 3-element MIB used by Apple and libproc wrappers
+	// (CTL_KERN, KERN_PROC, KERN_PROC_ALL). Some kernels also accept a trailing
+	// 0; try that only if the standard form fails.
+	buf, err := sysctlKinfoProcAll()
+	if err != nil {
+		return Listing{}, err
 	}
-	if need == 0 {
+	if len(buf) == 0 {
 		return Listing{}, nil
 	}
-	need += need / 8 // headroom for processes started since the size query
-
-	buf := make([]byte, need)
-	size := need
-	if _, _, errno := syscall.Syscall6(syscall.SYS___SYSCTL,
-		uintptr(unsafe.Pointer(&mib[0])), 4,
-		uintptr(unsafe.Pointer(&buf[0])),
-		uintptr(unsafe.Pointer(&size)), 0, 0); errno != 0 {
-		return Listing{}, fmt.Errorf("sysctl kern.proc.all: %w", errno)
-	}
-	if size > need {
-		size = need
-	}
-	if size%sizeofKinfoProc != 0 {
-		// The gate. This kernel's kinfo_proc is not the one this decoder was
-		// written against, so nothing is decoded.
+	if len(buf)%sizeofKinfoProc != 0 {
 		return Listing{}, fmt.Errorf(
 			"%w: kern.proc.all returned %d bytes, not a multiple of the expected %d-byte record",
-			ErrUnsupported, size, sizeofKinfoProc)
+			ErrUnsupported, len(buf), sizeofKinfoProc)
 	}
 
-	n := int(size) / sizeofKinfoProc
+	n := len(buf) / sizeofKinfoProc
 	out := Listing{Processes: make([]Info, 0, n)}
 	for i := 0; i < n; i++ {
 		if err := ctx.Err(); err != nil {
@@ -155,6 +132,55 @@ func (r *darwinReader) ListProcesses(ctx context.Context, opts ListOptions) (Lis
 		out.Processes = append(out.Processes, info)
 	}
 	return out, nil
+}
+
+func sysctlKinfoProcAll() ([]byte, error) {
+	mibs := [][]int32{
+		{ctlKern, kernProc, kernProcAll},
+		{ctlKern, kernProc, kernProcAll, 0},
+	}
+	var last error
+	for _, mib := range mibs {
+		b, err := sysctlBytes(mib)
+		if err != nil {
+			last = err
+			continue
+		}
+		if len(b) == 0 || len(b)%sizeofKinfoProc == 0 {
+			return b, nil
+		}
+		last = fmt.Errorf("%w: kern.proc.all returned %d bytes (not a multiple of %d)",
+			ErrUnsupported, len(b), sizeofKinfoProc)
+	}
+	if last == nil {
+		last = fmt.Errorf("%w: kern.proc.all unavailable", ErrUnsupported)
+	}
+	return nil, last
+}
+
+func sysctlBytes(mib []int32) ([]byte, error) {
+	var need uintptr
+	if _, _, errno := syscall.Syscall6(syscall.SYS___SYSCTL,
+		uintptr(unsafe.Pointer(&mib[0])), uintptr(len(mib)), 0,
+		uintptr(unsafe.Pointer(&need)), 0, 0); errno != 0 {
+		return nil, fmt.Errorf("sysctl kern.proc.all (size): %w", errno)
+	}
+	if need == 0 {
+		return nil, nil
+	}
+	need += need / 8
+	buf := make([]byte, need)
+	size := need
+	if _, _, errno := syscall.Syscall6(syscall.SYS___SYSCTL,
+		uintptr(unsafe.Pointer(&mib[0])), uintptr(len(mib)),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&size)), 0, 0); errno != 0 {
+		return nil, fmt.Errorf("sysctl kern.proc.all: %w", errno)
+	}
+	if size > need {
+		size = need
+	}
+	return buf[:size], nil
 }
 
 // decodeExternProc reads the fields this module needs out of one extern_proc.

@@ -4,12 +4,12 @@ package host
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"runtime"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/obsagent/observability-agent/internal/platform/darwinsysctl"
 )
@@ -83,18 +83,15 @@ func (r *darwinReader) ReadMemory(context.Context) (MemoryStats, error) {
 	if err != nil {
 		return MemoryStats{}, err
 	}
-	total := *(*uint64)(unsafe.Pointer(&b[0]))
+	total := binary.LittleEndian.Uint64(b[:8])
 	out := MemoryStats{Total: KnownU64(total)}
 
 	// vm.swapusage returns struct xsw_usage{ xsu_total, xsu_avail, xsu_used
 	// uint64; xsu_pagesize uint32; ... }. Only the first three are read.
 	if b, err := darwinsysctl.Bytes("vm.swapusage", 24); err == nil {
-		swapTotal := *(*uint64)(unsafe.Pointer(&b[0]))
-		swapAvail := *(*uint64)(unsafe.Pointer(&b[8]))
-		swapUsed := *(*uint64)(unsafe.Pointer(&b[16]))
-		out.SwapTotal = KnownU64(swapTotal)
-		out.SwapFree = KnownU64(swapAvail)
-		out.SwapUsed = KnownU64(swapUsed)
+		out.SwapTotal = KnownU64(binary.LittleEndian.Uint64(b[0:8]))
+		out.SwapFree = KnownU64(binary.LittleEndian.Uint64(b[8:16]))
+		out.SwapUsed = KnownU64(binary.LittleEndian.Uint64(b[16:24]))
 	}
 	return out, nil
 }
@@ -106,14 +103,21 @@ func (r *darwinReader) ReadMemory(context.Context) (MemoryStats, error) {
 //
 // }. Values are fixed-point and must be divided by fscale.
 func (r *darwinReader) ReadLoad(context.Context) (LoadStats, error) {
-	b, err := darwinsysctl.Bytes("vm.loadavg", 24)
+	b, err := darwinsysctl.Bytes("vm.loadavg", 12)
 	if err != nil {
 		return LoadStats{}, err
 	}
-	ld0 := *(*uint32)(unsafe.Pointer(&b[0]))
-	ld1 := *(*uint32)(unsafe.Pointer(&b[4]))
-	ld2 := *(*uint32)(unsafe.Pointer(&b[8]))
-	scale := float64(*(*int64)(unsafe.Pointer(&b[16])))
+	ld0 := binary.LittleEndian.Uint32(b[0:4])
+	ld1 := binary.LittleEndian.Uint32(b[4:8])
+	ld2 := binary.LittleEndian.Uint32(b[8:12])
+	// Prefer the kernel-provided fscale at offset 16 (LP64, with pad). Fall
+	// back to the historic FSCALE of 2048 when only the three averages land.
+	scale := float64(2048)
+	if len(b) >= 24 {
+		scale = float64(int64(binary.LittleEndian.Uint64(b[16:24])))
+	} else if len(b) >= 16 {
+		scale = float64(int32(binary.LittleEndian.Uint32(b[12:16])))
+	}
 	if scale == 0 {
 		return LoadStats{}, fmt.Errorf("sysctl vm.loadavg: zero scale")
 	}
@@ -143,7 +147,7 @@ func (r *darwinReader) ReadOS(context.Context) (OSInfo, error) {
 
 	// kern.boottime returns struct timeval{ int64 sec; int32 usec; }.
 	if b, err := darwinsysctl.Bytes("kern.boottime", 8); err == nil {
-		sec := *(*int64)(unsafe.Pointer(&b[0]))
+		sec := int64(binary.LittleEndian.Uint64(b[:8]))
 		if sec > 0 {
 			info.BootTime = time.Unix(sec, 0)
 			info.HasBootTime = true
@@ -198,11 +202,14 @@ func (r *darwinReader) ReadFilesystems(ctx context.Context) ([]FilesystemStats, 
 		if bsize > 0 {
 			fs.TotalBytes = KnownU64(st.Blocks * bsize)
 			fs.FreeBytes = KnownU64(st.Bfree * bsize)
-			avail := st.Bavail * bsize
-			// Snapshot / reserve accounting can report Bavail > Blocks; that is
-			// not usable as a capacity gauge, so leave Available unknown.
-			if st.Blocks > 0 && avail <= st.Blocks*bsize {
-				fs.AvailBytes = KnownU64(avail)
+			// On Darwin, f_bavail is signed in the kernel; Go's Statfs_t stores
+			// it as uint64, so a negative value appears as a huge uint and
+			// overflows capacity checks. Re-interpret before using.
+			if int64(st.Bavail) >= 0 {
+				avail := st.Bavail * bsize
+				if st.Blocks == 0 || avail <= st.Blocks*bsize {
+					fs.AvailBytes = KnownU64(avail)
+				}
 			}
 			if st.Blocks >= st.Bfree {
 				fs.UsedBytes = KnownU64((st.Blocks - st.Bfree) * bsize)
@@ -210,10 +217,17 @@ func (r *darwinReader) ReadFilesystems(ctx context.Context) ([]FilesystemStats, 
 		}
 		if st.Files > 0 {
 			fs.TotalInode = KnownU64(st.Files)
-			fs.FreeInode = KnownU64(st.Ffree)
-			if st.Files >= st.Ffree {
-				fs.UsedInode = KnownU64(st.Files - st.Ffree)
+			if int64(st.Ffree) >= 0 {
+				fs.FreeInode = KnownU64(st.Ffree)
+				if st.Files >= st.Ffree {
+					fs.UsedInode = KnownU64(st.Files - st.Ffree)
+				}
 			}
+		}
+		if fs.Mountpoint == "" {
+			// Synthetic / unnamed entries show up on some macOS images; skip
+			// rather than failing plausibility checks.
+			continue
 		}
 		out = append(out, fs)
 	}
