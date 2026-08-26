@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Fleet — observability agent</title>
+  <title>Observability agent — fleet</title>
   <style>
     :root {
       --bg: #0b0f14; --panel: #121820; --line: #243041; --text: #e8edf2;
@@ -12,104 +12,231 @@
       --bar: #1e2936; --grid: #1a2430;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
       font: 13px/1.45 "Segoe UI", ui-sans-serif, system-ui, sans-serif; }
-    main { max-width: 1180px; margin: 0 auto; padding: 20px 20px 60px; }
-    header.top { display: flex; justify-content: space-between; align-items: flex-start;
-      gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
-    h1 { margin: 0; font-size: 19px; font-weight: 650; }
-    .sub { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
-    .pill { font-size: 10px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line);
-      color: var(--muted); display: inline-block; }
+    .shell { display: flex; min-height: 100%; }
+    nav {
+      width: 200px; flex-shrink: 0; background: var(--sidebar); border-right: 1px solid var(--line);
+      padding: 18px 10px; display: flex; flex-direction: column; gap: 2px;
+    }
+    .brand { font-weight: 650; font-size: 14px; padding: 4px 10px 16px; }
+    .brand span { display: block; font-weight: 400; font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .nav-sec { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 12px 10px 4px; }
+    .nav-item {
+      display: flex; align-items: center; gap: 8px; border: 0; background: transparent;
+      width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; cursor: pointer;
+      color: var(--text); font: inherit;
+    }
+    .nav-item:hover { background: rgba(255,255,255,.04); }
+    .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600;
+      box-shadow: inset 3px 0 0 var(--accent); }
+    main { flex: 1; min-width: 0; padding: 16px 20px 40px; }
+    header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+    h1 { margin: 0; font-size: 18px; font-weight: 650; }
+    .sub { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .pill { font-size: 10px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); display: inline-block; }
     .ok { color: var(--ok); border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.1); }
     .warn { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
     .bad { color: var(--bad); border-color: rgba(248,113,113,.4); background: rgba(248,113,113,.1); }
     .blue { color: #60a5fa; border-color: rgba(96,165,250,.4); background: rgba(96,165,250,.1); }
-
-    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
-    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-      padding: 14px 16px; cursor: pointer; text-align: left; color: inherit; font: inherit; width: 100%; }
-    .card:hover { border-color: var(--accent); }
-    .card.sel { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-    .card h2 { margin: 0 0 2px; font-size: 15px; font-weight: 650;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .card .meta { color: var(--muted); font-size: 11px; margin-bottom: 12px;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .usage { margin-bottom: 9px; }
-    .usage .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase;
-      letter-spacing: .04em; margin-bottom: 4px; display: flex; justify-content: space-between; }
+    .host-head {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+      display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between;
+    }
+    .host-head .left { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .host-head h2 { margin: 0; font-size: 16px; }
+    .usage { min-width: 180px; }
+    .usage .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; display: flex; justify-content: space-between; }
     .bar { height: 8px; background: var(--bar); border-radius: 999px; overflow: hidden; }
-    .bar > i { display: block; height: 100%; border-radius: 999px;
-      background: linear-gradient(90deg, #22c55e, #4ade80); transition: width .4s ease; }
+    .bar > i { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #4ade80); border-radius: 999px; transition: width .4s ease; }
     .bar.mem > i { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
-    .bar.disk > i { background: linear-gradient(90deg, #a78bfa, #c4b5fd); }
     .bar.hot > i { background: linear-gradient(90deg, #f59e0b, #f87171); }
-    .foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 11px; }
-
-    section.detail { margin-top: 22px; }
-    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-      padding: 14px 16px; margin-bottom: 12px; }
-    .panel h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
-    .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px 18px; }
-    .kv div { font-size: 12px; min-width: 0; }
-    .kv .k { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
-    .kv .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-    .tab { border: 1px solid var(--line); background: transparent; color: var(--muted);
-      padding: 6px 12px; border-radius: 8px; cursor: pointer; font: inherit; font-size: 12px; }
-    .tab.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
-    .scroll { max-height: 420px; overflow: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--grid); }
-    th { color: var(--muted); font-size: 10px; text-transform: uppercase;
-      letter-spacing: .04em; font-weight: 600; position: sticky; top: 0; background: var(--panel); }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 14px; }
-    td.msg { font-family: ui-monospace, Consolas, monospace; font-size: 11px;
-      color: var(--muted); word-break: break-word; }
-    .filter { width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text);
-      border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 12px; margin-bottom: 10px; }
-    .empty { color: var(--muted); font-size: 12px; padding: 18px 0; }
-    .attrs { color: var(--muted); font-size: 10px; }
-    .spark { width: 90px; height: 22px; vertical-align: middle; }
+    .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .chart-card {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 8px;
+      min-height: 220px; display: flex; flex-direction: column;
+    }
+    .chart-card h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+    .chart-card canvas { width: 100%; height: 150px; flex: 1; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 6px; font-size: 10px; color: var(--muted); }
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; background: #0f1620; }
+    tr:last-child td { border-bottom: 0; }
+    tr.host-row { cursor: pointer; }
+    tr.host-row:hover td { background: rgba(255,255,255,.03); }
+    tr.host-row.sel td { background: var(--accent-soft); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    .link { color: var(--accent); text-decoration: underline; cursor: pointer; }
+    .empty { color: var(--muted); padding: 16px 10px; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+    .filter input {
+      width: min(420px, 100%); padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px;
+      font: inherit; background: #0f1620; color: var(--text); margin-bottom: 10px;
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .chip {
+      border: 1px solid var(--line); background: #0f1620; color: var(--muted); border-radius: 999px;
+      padding: 4px 12px; font: inherit; cursor: pointer;
+    }
+    .chip:hover { color: var(--text); }
+    .chip.active { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 18px; }
+    .detail-grid .k { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+    .detail-grid .v { font-size: 13px; margin-top: 2px; word-break: break-all; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    .card .n { color: var(--muted); font-size: 11px; }
+    .card .v { font-size: 20px; font-weight: 650; margin-top: 4px; }
+    .map { font-size: 11px; color: var(--muted); margin: 8px 0 0; }
+    @media (max-width: 980px) { .chart-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-<main>
-  <header class="top">
-    <div>
-      <h1>Fleet</h1>
-      <p class="sub" id="sub">connecting…</p>
-    </div>
-    <div id="badges"></div>
-  </header>
+  <div class="shell">
+    <nav>
+      <div class="brand">Observability agent<span>All hosts</span></div>
+      <div class="nav-sec">Monitor</div>
+      <button class="nav-item active" data-view="hosts" type="button">Hosts</button>
+      <div class="nav-sec">Explore</div>
+      <button class="nav-item" data-view="metrics" type="button">Metrics</button>
+      <button class="nav-item" data-view="logs" type="button">Logs</button>
+      <button class="nav-item" data-view="traces" type="button">Traces</button>
+      <div class="nav-sec">Manage</div>
+      <button class="nav-item" data-view="modules" type="button">Modules</button>
+      <button class="nav-item" data-view="overview" type="button">Overview</button>
+    </nav>
+    <main>
+      <header class="top">
+        <div>
+          <h1 id="title">Hosts</h1>
+          <p class="sub" id="subtitle">Every agent reporting to this intake</p>
+        </div>
+        <div id="health-pill"></div>
+      </header>
 
-  <div class="cards" id="cards"></div>
-  <p class="empty" id="noHosts" hidden>
-    No agent has reported yet. An agent appears here once it POSTs to this intake —
-    set <code>OBSAGENT_EXPORT_ENDPOINT</code> to this intake's ingest address and restart it.
-  </p>
+      <section class="view active" id="view-hosts">
+        <div class="host-head">
+          <div class="left">
+            <h2 id="host-name">—</h2>
+            <span class="pill ok" id="host-status">ACTIVE</span>
+            <span class="pill blue" id="host-os"></span>
+            <span class="pill" id="host-id"></span>
+          </div>
+          <div style="display:flex;gap:20px;flex-wrap:wrap">
+            <div class="usage" style="width:200px">
+              <div class="lbl"><span>CPU usage</span><span id="cpu-pct">—</span></div>
+              <div class="bar"><i id="cpu-bar" style="width:0%"></i></div>
+            </div>
+            <div class="usage" style="width:200px">
+              <div class="lbl"><span>Memory usage</span><span id="mem-pct">—</span></div>
+              <div class="bar mem"><i id="mem-bar" style="width:0%"></i></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel" style="margin-bottom:14px;padding:12px 14px">
+          <div class="detail-grid" id="host-details"></div>
+        </div>
+        <div class="panel" style="margin-bottom:14px">
+          <table>
+            <thead>
+              <tr><th>Hostname</th><th>Status</th><th>CPU</th><th>Memory</th><th>IOWait</th><th>Load Avg</th></tr>
+            </thead>
+            <tbody id="host-rows"></tbody>
+          </table>
+        </div>
+        <p class="hint" id="hosts-hint">Click a hostname to inspect its metrics, logs, and traces.</p>
+      </section>
 
-  <section class="detail" id="detail" hidden>
-    <div class="panel">
-      <h3 id="detailName"></h3>
-      <div class="kv" id="detailKV"></div>
-    </div>
-    <div class="tabs">
-      <button class="tab active" data-tab="metrics">Metrics</button>
-      <button class="tab" data-tab="logs">Logs</button>
-      <button class="tab" data-tab="traces">Traces</button>
-      <button class="tab" data-tab="resource">Resource</button>
-    </div>
-    <div class="panel">
-      <input class="filter" id="filter" placeholder="Filter…" />
-      <div class="scroll" id="tabBody"></div>
-    </div>
-  </section>
-</main>
+      <section class="view" id="view-metrics">
+        <div class="chips" id="host-chips-metrics"></div>
+        <div class="host-head" style="margin-bottom:12px">
+          <div class="left">
+            <h2 id="metrics-host-name">Host metrics</h2>
+            <span class="pill" id="metrics-host-id"></span>
+          </div>
+          <div style="display:flex;gap:20px;flex-wrap:wrap">
+            <div class="usage" style="width:200px">
+              <div class="lbl"><span>CPU usage</span><span id="metrics-cpu-pct">—</span></div>
+              <div class="bar"><i id="metrics-cpu-bar" style="width:0%"></i></div>
+            </div>
+            <div class="usage" style="width:200px">
+              <div class="lbl"><span>Memory usage</span><span id="metrics-mem-pct">—</span></div>
+              <div class="bar mem"><i id="metrics-mem-bar" style="width:0%"></i></div>
+            </div>
+          </div>
+        </div>
+        <div class="chart-grid" id="charts"></div>
+        <p class="map">Charts use live agent series (<span class="mono">host.cpu.*</span>,
+          <span class="mono">host.memory.*</span>, <span class="mono">host.network.*</span>,
+          <span class="mono">host.load.*</span>). History accumulates in the intake, so it survives
+          this page being closed.</p>
+        <p class="hint" style="margin-top:16px">Raw series table</p>
+        <div class="chips" id="metric-chips">
+          <button type="button" class="chip active" data-prefix="host.">Host</button>
+          <button type="button" class="chip" data-prefix="process.">Process</button>
+          <button type="button" class="chip" data-prefix="discovery.|container.">Discovery</button>
+          <button type="button" class="chip" data-prefix="agent.">Agent</button>
+          <button type="button" class="chip" data-prefix="">All</button>
+        </div>
+        <div class="filter"><input id="metrics-filter" placeholder="Extra filter (e.g. cpu, memory, disk)…" /></div>
+        <p class="hint" id="metrics-count"></p>
+        <div class="panel"><table>
+          <thead><tr><th>Name</th><th>Labels</th><th>Value</th></tr></thead>
+          <tbody id="metrics"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-logs">
+        <div class="chips" id="host-chips-logs"></div>
+        <p class="hint" id="logs-hint">Recent log lines received from this host.</p>
+        <div class="filter"><input id="logs-filter" placeholder="Filter logs…" /></div>
+        <div class="panel"><table>
+          <thead><tr><th>Time</th><th>Severity</th><th>Source</th><th>Body</th></tr></thead>
+          <tbody id="logs"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-traces">
+        <div class="chips" id="host-chips-traces"></div>
+        <p class="hint" id="traces-hint">Spans received from this host.</p>
+        <div class="panel"><table>
+          <thead><tr><th>Time</th><th>Span</th><th>Trace ID</th><th>Status</th></tr></thead>
+          <tbody id="traces"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-modules">
+        <div class="chips" id="host-chips-modules"></div>
+        <p class="hint" id="modules-hint">Module state as reported by the agent's own telemetry.</p>
+        <div class="panel"><table>
+          <thead><tr><th>Module</th><th>State</th><th>Health</th><th>Starts</th><th>Start latency</th></tr></thead>
+          <tbody id="modules"></tbody>
+        </table></div>
+      </section>
+
+      <section class="view" id="view-overview">
+        <div class="cards" id="fleet-cards"></div>
+        <div class="panel"><table>
+          <thead><tr><th>Host</th><th>Host ID</th><th>Platform</th><th>Agent</th><th>Series</th><th>Batches (m/l/t)</th><th>Last seen</th></tr></thead>
+          <tbody id="fleet-table"></tbody>
+        </table></div>
+        <p class="map">The intake keeps a bounded view: latest values per series, history for
+          <span class="mono">host.*</span> only, and rings of recent logs and spans. The JSONL
+          archive on disk is the complete record.</p>
+      </section>
+    </main>
+  </div>
 
 <script>
 "use strict";
-var selected = null, tab = "metrics", detail = null, filterText = "";
+var view = "hosts", fleet = null, selected = null, detail = null;
+var metricPrefix = "host.", metricFilter = "", logFilter = "";
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -139,215 +266,401 @@ function num(v) {
   if (Number.isInteger(n)) return String(n);
   return n.toFixed(3);
 }
-function bar(cls, pct) {
-  var p = Math.max(0, Math.min(100, Number(pct) || 0));
-  return '<div class="bar ' + cls + (p >= 85 ? " hot" : "") + '"><i style="width:' + p.toFixed(1) + '%"></i></div>';
+function pct(v) { return (Number(v) || 0).toFixed(0) + "%"; }
+function setBar(el, lbl, v) {
+  var p = Math.max(0, Math.min(100, Number(v) || 0));
+  var bar = document.getElementById(el);
+  bar.style.width = p.toFixed(1) + "%";
+  bar.parentNode.classList.toggle("hot", p >= 85);
+  document.getElementById(lbl).textContent = pct(p);
 }
-function usage(label, pct, right, cls) {
-  return '<div class="usage"><div class="lbl"><span>' + label + "</span><span>" +
-    right + "</span></div>" + bar(cls, pct) + "</div>";
-}
-
-function sparkline(history) {
-  if (!history || history.length < 2) return "";
-  var vals = history.map(function (p) { return Number(p.v) || 0; });
-  var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
-  var span = max - min || 1, w = 90, h = 22, step = w / (vals.length - 1);
-  var d = vals.map(function (v, i) {
-    return (i ? "L" : "M") + (i * step).toFixed(1) + "," + (h - 2 - ((v - min) / span) * (h - 4)).toFixed(1);
-  }).join(" ");
-  return '<svg class="spark" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none">' +
-    '<path d="' + d + '" fill="none" stroke="#2dd4bf" stroke-width="1.5"/></svg>';
+function miniBar(v, cls) {
+  var p = Math.max(0, Math.min(100, Number(v) || 0));
+  return '<div class="bar ' + (cls || "") + (p >= 85 ? " hot" : "") + '" style="width:150px;display:inline-block;vertical-align:middle">' +
+    '<i style="width:' + p.toFixed(1) + '%"></i></div><div style="font-size:11px;color:var(--muted)">' + pct(p) + "</div>";
 }
 
-function renderFleet(f) {
-  var live = f.live, total = f.total;
-  document.getElementById("sub").textContent =
-    total + (total === 1 ? " host" : " hosts") + " reporting · " + live + " live · updated " +
-    new Date(f.now).toLocaleTimeString();
-  document.getElementById("badges").innerHTML =
-    '<span class="pill ' + (live === total && total > 0 ? "ok" : total === 0 ? "" : "warn") + '">' +
-    live + "/" + total + " live</span>";
+function current() {
+  if (!fleet || !fleet.hosts.length) return null;
+  for (var i = 0; i < fleet.hosts.length; i++) {
+    if (fleet.hosts[i].host === selected) return fleet.hosts[i];
+  }
+  selected = fleet.hosts[0].host;
+  return fleet.hosts[0];
+}
 
-  document.getElementById("noHosts").hidden = total > 0;
+/* ---------- Hosts ---------- */
 
-  var cards = f.hosts.map(function (h) {
-    var os = [h.platform || h.os, h.architecture].filter(Boolean).join(" · ");
-    var state = h.stale
-      ? '<span class="pill bad">stale ' + dur(h.age_seconds) + "</span>"
-      : '<span class="pill ok">live</span>';
-    var cloud = h.cloud_provider ? '<span class="pill blue">' + esc(h.cloud_provider) + "</span>" : "";
-    var agent = h.agent_version ? '<span class="pill">v' + esc(h.agent_version) + "</span>" : "";
-    var drop = h.dropped_series ? '<span class="pill warn">' + h.dropped_series + " dropped</span>" : "";
-    return '<button class="card' + (selected === h.host ? " sel" : "") + '" data-host="' + esc(h.host) + '">' +
-      "<h2>" + esc(h.host) + "</h2>" +
-      '<div class="meta">' + esc(h.host_id && h.host_id !== h.host ? h.host_id + " · " : "") +
-        esc(os || "unknown platform") + (h.uptime_seconds ? " · up " + dur(h.uptime_seconds) : "") + "</div>" +
-      usage("CPU", h.cpu_percent, (Number(h.cpu_percent) || 0).toFixed(1) + "%", "cpu") +
-      usage("Memory", h.mem_percent,
-        (h.mem_total_bytes ? bytes(h.mem_used_bytes) + " / " + bytes(h.mem_total_bytes)
-                           : (Number(h.mem_percent) || 0).toFixed(1) + "%"), "mem") +
-      usage("Disk (fullest)", h.disk_percent, (Number(h.disk_percent) || 0).toFixed(1) + "%", "disk") +
-      '<div class="foot">' + state + cloud + agent + drop +
-        '<span class="pill">' + h.series + " series</span>" +
-        (h.processes ? '<span class="pill">' + num(h.processes) + " procs</span>" : "") +
-      "</div></button>";
+function renderHosts() {
+  var h = current();
+  var head = document.getElementById("host-name");
+  if (!h) {
+    head.textContent = "No agents reporting";
+    document.getElementById("host-status").textContent = "WAITING";
+    document.getElementById("host-status").className = "pill warn";
+    document.getElementById("host-os").textContent = "";
+    document.getElementById("host-id").textContent = "";
+    document.getElementById("host-details").innerHTML = "";
+    document.getElementById("host-rows").innerHTML =
+      '<tr><td colspan="6" class="empty">No agent has reported yet. An agent appears here once it ' +
+      "POSTs to this intake — point OBSAGENT_EXPORT_ENDPOINT at this intake's ingest address and restart it.</td></tr>";
+    setBar("cpu-bar", "cpu-pct", 0);
+    setBar("mem-bar", "mem-pct", 0);
+    return;
+  }
+
+  head.textContent = h.host;
+  var st = document.getElementById("host-status");
+  st.textContent = h.stale ? "STALE" : "ACTIVE";
+  st.className = "pill " + (h.stale ? "bad" : "ok");
+  var os = document.getElementById("host-os");
+  os.textContent = (h.os || "unknown").toUpperCase();
+  os.className = "pill blue";
+  document.getElementById("host-id").textContent = h.host_id || "";
+  setBar("cpu-bar", "cpu-pct", h.cpu_percent);
+  setBar("mem-bar", "mem-pct", h.mem_percent);
+
+  var d = [
+    ["Instance ID", h.host_id || "—"],
+    ["Cloud", h.cloud_provider || "—"],
+    ["Hostname", h.host],
+    ["OS", h.os || "—"],
+    ["Platform", [h.platform, h.platform_version].filter(Boolean).join(" ") || "—"],
+    ["Architecture", h.architecture || "—"],
+    ["Agent", h.agent_version ? "v" + h.agent_version : "—"],
+    ["Uptime", h.uptime_seconds ? dur(h.uptime_seconds) : "—"],
+    ["Processes", h.processes ? num(h.processes) : "—"],
+    ["Last seen", dur(h.age_seconds) + " ago"]
+  ];
+  document.getElementById("host-details").innerHTML = d.map(function (p) {
+    return '<div><div class="k">' + esc(p[0]) + '</div><div class="v mono">' + esc(p[1]) + "</div></div>";
   }).join("");
-  document.getElementById("cards").innerHTML = cards;
 
-  Array.prototype.forEach.call(document.querySelectorAll(".card"), function (el) {
-    el.addEventListener("click", function () { select(el.getAttribute("data-host")); });
+  document.getElementById("host-rows").innerHTML = fleet.hosts.map(function (x) {
+    // Load average is POSIX-only. Windows agents report none, so show a dash
+    // rather than 0.00, which would read as an idle machine.
+    var load = x.has_load
+      ? '<span class="mono">' + x.load_1m.toFixed(2) + " " + x.load_5m.toFixed(2) + " " + x.load_15m.toFixed(2) + "</span>"
+      : "—";
+    return '<tr class="host-row' + (x.host === selected ? " sel" : "") + '" data-host="' + esc(x.host) + '">' +
+      '<td><span class="link">' + esc(x.host) + "</span></td>" +
+      '<td><span class="pill ' + (x.stale ? "bad" : "ok") + '">' + (x.stale ? "STALE" : "ACTIVE") + "</span></td>" +
+      "<td>" + miniBar(x.cpu_percent) + "</td>" +
+      "<td>" + miniBar(x.mem_percent, "mem") + "</td>" +
+      '<td class="mono">' + (x.os === "windows" ? "—" : pct(x.iowait_percent)) + "</td>" +
+      "<td>" + load + "</td></tr>";
+  }).join("");
+
+  Array.prototype.forEach.call(document.querySelectorAll(".host-row"), function (tr) {
+    tr.addEventListener("click", function () {
+      selected = tr.getAttribute("data-host");
+      loadDetail().then(render);
+    });
+  });
+
+  document.getElementById("hosts-hint").textContent =
+    fleet.total + (fleet.total === 1 ? " host" : " hosts") + " · " + fleet.live +
+    " live · a host is stale after " + fleet.stale_after + " of silence. Click a hostname to select it.";
+}
+
+/* ---------- host switcher ---------- */
+
+function renderHostChips(id) {
+  var box = document.getElementById(id);
+  if (!box || !fleet) return;
+  box.innerHTML = fleet.hosts.map(function (h) {
+    return '<button type="button" class="chip' + (h.host === selected ? " active" : "") +
+      '" data-host="' + esc(h.host) + '">' + esc(h.host) + (h.stale ? " (stale)" : "") + "</button>";
+  }).join("");
+  Array.prototype.forEach.call(box.querySelectorAll(".chip"), function (b) {
+    b.addEventListener("click", function () {
+      selected = b.getAttribute("data-host");
+      loadDetail().then(render);
+    });
   });
 }
 
-function select(host) {
-  selected = selected === host ? null : host;
-  if (!selected) {
-    document.getElementById("detail").hidden = true;
-    detail = null;
-    poll();
-    return;
+/* ---------- charts ---------- */
+
+var CHARTS = [
+  { title: "CPU utilisation by state (%)", match: /^host\.cpu\.utilization$/, label: "state", scale: 100 },
+  { title: "Memory (%)", match: /^host\.memory\.(utilization)$/, label: "", scale: 100 },
+  { title: "Network throughput (bytes)", match: /^host\.network\.(rx|tx)_bytes$/, label: "device", scale: 1 },
+  { title: "Load average", match: /^host\.load\./, label: "", scale: 1 }
+];
+var COLORS = ["#2dd4bf", "#60a5fa", "#f472b6", "#fbbf24", "#a78bfa", "#34d399", "#f87171", "#38bdf8"];
+
+function drawChart(card, spec, series) {
+  var canvas = card.querySelector("canvas");
+  var w = canvas.clientWidth || 320, h = canvas.clientHeight || 150;
+  var dpr = window.devicePixelRatio || 1;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  var ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  var withHist = series.filter(function (s) { return s.history && s.history.length > 1; });
+  if (!withHist.length) {
+    ctx.fillStyle = "#8b98a5"; ctx.font = '12px "Segoe UI", sans-serif';
+    ctx.fillText("collecting…", 8, 20);
+    return "";
   }
-  loadDetail();
-}
 
-function loadDetail() {
-  if (!selected) return Promise.resolve();
-  return fetch("/api/host?host=" + encodeURIComponent(selected))
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (d) {
-      detail = d;
-      renderDetail();
-    })
-    .catch(function () {});
-}
-
-function renderDetail() {
-  var box = document.getElementById("detail");
-  if (!detail) { box.hidden = true; return; }
-  box.hidden = false;
-  document.getElementById("detailName").textContent = detail.host;
-
-  var kv = [
-    ["host id", detail.host_id || "—"],
-    ["platform", [detail.platform || detail.os, detail.platform_version].filter(Boolean).join(" ") || "—"],
-    ["architecture", detail.architecture || "—"],
-    ["cloud", detail.cloud_provider || "—"],
-    ["agent", detail.agent_version ? "v" + detail.agent_version : "—"],
-    ["uptime", detail.uptime_seconds ? dur(detail.uptime_seconds) : "—"],
-    ["last seen", dur(detail.age_seconds) + " ago"],
-    ["first seen", new Date(detail.first_seen).toLocaleString()],
-    ["series", detail.series + (detail.dropped_series ? " (" + detail.dropped_series + " dropped)" : "")],
-    ["batches", "m " + detail.batches_metrics + " · l " + detail.batches_logs + " · t " + detail.batches_traces]
-  ];
-  document.getElementById("detailKV").innerHTML = kv.map(function (p) {
-    return '<div><div class="k">' + esc(p[0]) + '</div><div class="v">' + esc(p[1]) + "</div></div>";
-  }).join("");
-
-  renderTab();
-}
-
-function renderTab() {
-  var body = document.getElementById("tabBody");
-  var f = document.getElementById("filter");
-  if (!detail) { body.innerHTML = ""; return; }
-  var q = filterText.toLowerCase();
-
-  if (tab === "metrics") {
-    f.placeholder = "Filter metrics by name or attribute…";
-    var rows = detail.metrics.filter(function (m) {
-      if (!q) return true;
-      return (m.name + " " + JSON.stringify(m.attrs || {})).toLowerCase().indexOf(q) >= 0;
+  var min = Infinity, max = -Infinity, maxLen = 0;
+  withHist.forEach(function (s) {
+    s.history.forEach(function (p) {
+      var v = (Number(p.v) || 0) * spec.scale;
+      if (v < min) min = v;
+      if (v > max) max = v;
     });
-    if (!rows.length) { body.innerHTML = '<p class="empty">No metrics match.</p>'; return; }
-    body.innerHTML = "<table><thead><tr><th>Metric</th><th></th><th style='text-align:right'>Value</th></tr></thead><tbody>" +
-      rows.map(function (m) {
+    maxLen = Math.max(maxLen, s.history.length);
+  });
+  if (min === max) { max = min + 1; }
+  var pad = (max - min) * 0.1;
+  min -= pad; max += pad;
+  if (spec.scale === 100) { min = Math.max(0, min); max = Math.min(100, Math.max(max, 1)); }
+
+  ctx.strokeStyle = "#1a2430"; ctx.lineWidth = 1;
+  for (var g = 0; g <= 4; g++) {
+    var y = (h - 18) * g / 4 + 4;
+    ctx.beginPath(); ctx.moveTo(30, y); ctx.lineTo(w, y); ctx.stroke();
+    ctx.fillStyle = "#8b98a5"; ctx.font = '9px "Segoe UI", sans-serif';
+    ctx.fillText((max - (max - min) * g / 4).toFixed(spec.scale === 100 ? 0 : 2), 2, y + 3);
+  }
+
+  var legend = [];
+  withHist.slice(0, COLORS.length).forEach(function (s, i) {
+    var color = COLORS[i % COLORS.length];
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+    var step = (w - 34) / Math.max(1, maxLen - 1);
+    s.history.forEach(function (p, j) {
+      var v = (Number(p.v) || 0) * spec.scale;
+      var x = 32 + j * step;
+      var y = 4 + (h - 22) * (1 - (v - min) / (max - min));
+      if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    var name = spec.label && s.attrs && s.attrs[spec.label] ? s.attrs[spec.label] : s.name.replace(/^host\./, "");
+    legend.push('<span><i style="background:' + color + '"></i>' + esc(name) + "</span>");
+  });
+  return legend.join("");
+}
+
+function renderCharts() {
+  var box = document.getElementById("charts");
+  if (!detail) { box.innerHTML = ""; return; }
+  box.innerHTML = CHARTS.map(function (c, i) {
+    return '<div class="chart-card" data-chart="' + i + '"><h3>' + esc(c.title) +
+      '</h3><canvas></canvas><div class="legend"></div></div>';
+  }).join("");
+  CHARTS.forEach(function (spec, i) {
+    var card = box.querySelector('[data-chart="' + i + '"]');
+    var series = detail.metrics.filter(function (m) { return spec.match.test(m.name); });
+    var legend = drawChart(card, spec, series);
+    card.querySelector(".legend").innerHTML = legend;
+  });
+}
+
+/* ---------- views ---------- */
+
+function renderMetrics() {
+  var h = current();
+  document.getElementById("metrics-host-name").textContent = h ? h.host : "Host metrics";
+  document.getElementById("metrics-host-id").textContent = h && h.host_id ? h.host_id : "";
+  setBar("metrics-cpu-bar", "metrics-cpu-pct", h ? h.cpu_percent : 0);
+  setBar("metrics-mem-bar", "metrics-mem-pct", h ? h.mem_percent : 0);
+  renderCharts();
+
+  var body = document.getElementById("metrics");
+  if (!detail) { body.innerHTML = '<tr><td colspan="3" class="empty">Select a host.</td></tr>'; return; }
+  var re = metricPrefix ? new RegExp("^(" + metricPrefix.replace(/\./g, "\\.") + ")") : null;
+  var q = metricFilter.toLowerCase();
+  var rows = detail.metrics.filter(function (m) {
+    if (re && !re.test(m.name)) return false;
+    if (!q) return true;
+    return (m.name + " " + JSON.stringify(m.attrs || {})).toLowerCase().indexOf(q) >= 0;
+  });
+  document.getElementById("metrics-count").textContent =
+    rows.length + " of " + detail.metrics.length + " series" +
+    (detail.dropped_series ? " · " + detail.dropped_series + " dropped at the cap" : "");
+  body.innerHTML = rows.length
+    ? rows.map(function (m) {
         var a = m.attrs ? Object.keys(m.attrs).sort().map(function (k) {
           return k + "=" + m.attrs[k];
         }).join(" ") : "";
-        return "<tr><td>" + esc(m.name) + (a ? '<div class="attrs">' + esc(a) + "</div>" : "") +
-          "</td><td>" + sparkline(m.history) + '</td><td class="num">' + esc(num(m.value)) + "</td></tr>";
-      }).join("") + "</tbody></table>";
-    return;
-  }
-
-  if (tab === "logs") {
-    f.placeholder = "Filter logs…";
-    var logs = detail.logs.filter(function (l) {
-      return !q || (l.message + " " + (l.source || "")).toLowerCase().indexOf(q) >= 0;
-    });
-    if (!logs.length) {
-      body.innerHTML = '<p class="empty">No log lines received from this host yet. ' +
-        "The agent ships logs only if its <code>logs</code> module is enabled and has readable sources.</p>";
-      return;
-    }
-    body.innerHTML = "<table><thead><tr><th>Time</th><th>Status</th><th>Source</th><th>Message</th></tr></thead><tbody>" +
-      logs.map(function (l) {
-        return "<tr><td>" + esc(new Date(l.time).toLocaleTimeString()) + "</td><td>" +
-          esc(l.status || "—") + "</td><td>" + esc(l.source || "—") +
-          '</td><td class="msg">' + esc(l.message) + "</td></tr>";
-      }).join("") + "</tbody></table>";
-    return;
-  }
-
-  if (tab === "traces") {
-    f.placeholder = "Filter spans…";
-    var spans = detail.spans.filter(function (s) {
-      return !q || (s.name + " " + s.trace_id).toLowerCase().indexOf(q) >= 0;
-    });
-    if (!spans.length) {
-      body.innerHTML = '<p class="empty">No spans received. Traces appear only when an ' +
-        "instrumented application sends OTLP to the agent's receiver — the agent does not generate them itself.</p>";
-      return;
-    }
-    body.innerHTML = "<table><thead><tr><th>Time</th><th>Span</th><th>Trace</th><th>Status</th></tr></thead><tbody>" +
-      spans.map(function (s) {
-        return "<tr><td>" + esc(new Date(s.time).toLocaleTimeString()) + "</td><td>" + esc(s.name) +
-          '</td><td class="msg">' + esc(s.trace_id) + "</td><td>" + esc(s.status || "—") + "</td></tr>";
-      }).join("") + "</tbody></table>";
-    return;
-  }
-
-  f.placeholder = "Filter resource attributes…";
-  var res = detail.resource || {};
-  var keys = Object.keys(res).sort().filter(function (k) {
-    return !q || (k + " " + res[k]).toLowerCase().indexOf(q) >= 0;
-  });
-  if (!keys.length) { body.innerHTML = '<p class="empty">No resource attributes.</p>'; return; }
-  body.innerHTML = "<table><thead><tr><th>Attribute</th><th>Value</th></tr></thead><tbody>" +
-    keys.map(function (k) {
-      return "<tr><td>" + esc(k) + "</td><td>" + esc(res[k]) + "</td></tr>";
-    }).join("") + "</tbody></table>";
+        return "<tr><td>" + esc(m.name) + '</td><td class="mono" style="color:var(--muted)">' +
+          esc(a || "—") + '</td><td class="mono">' + esc(num(m.value)) + "</td></tr>";
+      }).join("")
+    : '<tr><td colspan="3" class="empty">No series match.</td></tr>';
 }
 
-Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (btn) {
+function renderLogs() {
+  var body = document.getElementById("logs");
+  if (!detail) { body.innerHTML = '<tr><td colspan="4" class="empty">Select a host.</td></tr>'; return; }
+  var q = logFilter.toLowerCase();
+  var rows = detail.logs.filter(function (l) {
+    return !q || (l.message + " " + (l.source || "")).toLowerCase().indexOf(q) >= 0;
+  });
+  document.getElementById("logs-hint").textContent =
+    detail.logs.length + " recent lines from " + detail.host + " · " + detail.batches_logs + " batches received";
+  body.innerHTML = rows.length
+    ? rows.map(function (l) {
+        return "<tr><td>" + esc(new Date(l.time).toLocaleTimeString()) + "</td><td>" +
+          esc(l.status || "—") + "</td><td>" + esc(l.source || "—") +
+          '</td><td class="mono">' + esc(l.message) + "</td></tr>";
+      }).join("")
+    : '<tr><td colspan="4" class="empty">No log lines received from this host. The agent ships logs ' +
+      "only if its logs module is enabled and has readable sources.</td></tr>";
+}
+
+function renderTraces() {
+  var body = document.getElementById("traces");
+  if (!detail) { body.innerHTML = '<tr><td colspan="4" class="empty">Select a host.</td></tr>'; return; }
+  document.getElementById("traces-hint").textContent =
+    detail.spans.length + " recent spans from " + detail.host + " · " + detail.batches_traces + " batches received";
+  body.innerHTML = detail.spans.length
+    ? detail.spans.map(function (s) {
+        return "<tr><td>" + esc(new Date(s.time).toLocaleTimeString()) + "</td><td>" + esc(s.name) +
+          '</td><td class="mono">' + esc(s.trace_id) + "</td><td>" + esc(s.status || "—") + "</td></tr>";
+      }).join("")
+    : '<tr><td colspan="4" class="empty">No spans received. Traces appear only when an instrumented ' +
+      "application sends OTLP to the agent's receiver — the agent does not generate them itself.</td></tr>";
+}
+
+function renderModules() {
+  var body = document.getElementById("modules");
+  if (!detail) { body.innerHTML = '<tr><td colspan="5" class="empty">Select a host.</td></tr>'; return; }
+  // The intake never receives the agent's supervisor state directly; it is
+  // reconstructed from the agent.module.* series the agent ships as metrics.
+  var mods = {};
+  detail.metrics.forEach(function (m) {
+    var name = m.attrs && m.attrs.module;
+    if (!name || m.name.indexOf("agent.module.") !== 0) return;
+    mods[name] = mods[name] || { module: name };
+    if (m.name === "agent.module.state") mods[name].state = m.value;
+    if (m.name === "agent.module.health_status") mods[name].health = m.value;
+    if (m.name === "agent.module.starts") mods[name].starts = m.value;
+    if (m.name === "agent.module.start_latency_seconds") mods[name].latency = m.value;
+  });
+  var names = Object.keys(mods).sort();
+  document.getElementById("modules-hint").textContent = names.length
+    ? names.length + " modules on " + detail.host + ", from the agent's own agent.module.* telemetry."
+    : "";
+  body.innerHTML = names.length
+    ? names.map(function (n) {
+        var m = mods[n];
+        var healthCls = m.health === 1 ? "ok" : m.health === undefined ? "" : "warn";
+        return "<tr><td>" + esc(n) + '</td><td class="mono">' + (m.state === undefined ? "—" : num(m.state)) +
+          '</td><td><span class="pill ' + healthCls + '">' + (m.health === undefined ? "—" : num(m.health)) +
+          '</span></td><td class="mono">' + (m.starts === undefined ? "—" : num(m.starts)) +
+          '</td><td class="mono">' + (m.latency === undefined ? "—" : m.latency.toFixed(4) + "s") + "</td></tr>";
+      }).join("")
+    : '<tr><td colspan="5" class="empty">No agent.module.* series received from this host yet.</td></tr>';
+}
+
+function renderOverview() {
+  if (!fleet) return;
+  var series = 0, bm = 0, bl = 0, bt = 0;
+  fleet.hosts.forEach(function (h) {
+    series += h.series; bm += h.batches_metrics; bl += h.batches_logs; bt += h.batches_traces;
+  });
+  var cards = [
+    ["Hosts", fleet.total], ["Live", fleet.live], ["Stale", fleet.total - fleet.live],
+    ["Series", num(series)], ["Metric batches", num(bm)], ["Log batches", num(bl)], ["Trace batches", num(bt)]
+  ];
+  document.getElementById("fleet-cards").innerHTML = cards.map(function (c) {
+    return '<div class="card"><div class="n">' + esc(c[0]) + '</div><div class="v">' + esc(c[1]) + "</div></div>";
+  }).join("");
+  document.getElementById("fleet-table").innerHTML = fleet.hosts.length
+    ? fleet.hosts.map(function (h) {
+        return "<tr><td>" + esc(h.host) + '</td><td class="mono">' + esc(h.host_id || "—") +
+          "</td><td>" + esc([h.platform, h.platform_version].filter(Boolean).join(" ") || h.os || "—") +
+          '</td><td class="mono">' + esc(h.agent_version ? "v" + h.agent_version : "—") +
+          '</td><td class="mono">' + h.series + '</td><td class="mono">' +
+          h.batches_metrics + " / " + h.batches_logs + " / " + h.batches_traces +
+          "</td><td>" + dur(h.age_seconds) + " ago</td></tr>";
+      }).join("")
+    : '<tr><td colspan="7" class="empty">No hosts yet.</td></tr>';
+}
+
+var TITLES = {
+  hosts: ["Hosts", "Every agent reporting to this intake"],
+  metrics: ["Metrics", "Live series for the selected host"],
+  logs: ["Logs", "Recent log lines received by this intake"],
+  traces: ["Traces", "Spans received by this intake"],
+  modules: ["Modules", "Agent module state, from shipped telemetry"],
+  overview: ["Overview", "Fleet totals and what this intake retains"]
+};
+
+function render() {
+  var t = TITLES[view];
+  document.getElementById("title").textContent = t[0];
+  document.getElementById("subtitle").textContent = t[1];
+
+  if (fleet) {
+    var cls = fleet.total === 0 ? "warn" : fleet.live === fleet.total ? "ok" : "warn";
+    document.getElementById("health-pill").innerHTML =
+      '<span class="pill ' + cls + '">' + fleet.live + "/" + fleet.total + " live</span>";
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll(".view"), function (s) {
+    s.classList.toggle("active", s.id === "view-" + view);
+  });
+
+  if (view === "hosts") { renderHosts(); return; }
+  renderHostChips("host-chips-" + view);
+  if (view === "metrics") renderMetrics();
+  if (view === "logs") renderLogs();
+  if (view === "traces") renderTraces();
+  if (view === "modules") renderModules();
+  if (view === "overview") renderOverview();
+}
+
+Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (btn) {
   btn.addEventListener("click", function () {
-    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (b) {
+    Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (b) {
       b.classList.toggle("active", b === btn);
     });
-    tab = btn.getAttribute("data-tab");
-    renderTab();
+    view = btn.getAttribute("data-view");
+    render();
   });
 });
-document.getElementById("filter").addEventListener("input", function (e) {
-  filterText = e.target.value;
-  renderTab();
+Array.prototype.forEach.call(document.querySelectorAll("#metric-chips .chip"), function (btn) {
+  btn.addEventListener("click", function () {
+    Array.prototype.forEach.call(document.querySelectorAll("#metric-chips .chip"), function (b) {
+      b.classList.toggle("active", b === btn);
+    });
+    metricPrefix = btn.getAttribute("data-prefix");
+    renderMetrics();
+  });
 });
+document.getElementById("metrics-filter").addEventListener("input", function (e) {
+  metricFilter = e.target.value; renderMetrics();
+});
+document.getElementById("logs-filter").addEventListener("input", function (e) {
+  logFilter = e.target.value; renderLogs();
+});
+window.addEventListener("resize", function () { if (view === "metrics") renderCharts(); });
+
+function loadDetail() {
+  if (!selected) { detail = null; return Promise.resolve(); }
+  return fetch("/api/host?host=" + encodeURIComponent(selected))
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (d) { detail = d; })
+    .catch(function () { detail = null; });
+}
 
 function poll() {
   return fetch("/api/fleet")
     .then(function (r) { return r.json(); })
     .then(function (f) {
-      renderFleet(f);
-      if (selected && f.hosts.every(function (h) { return h.host !== selected; })) {
-        selected = null;
-        detail = null;
-        document.getElementById("detail").hidden = true;
-      }
-      return selected ? loadDetail() : null;
+      fleet = f;
+      current();
+      return loadDetail();
     })
+    .then(render)
     .catch(function () {
-      document.getElementById("sub").textContent = "intake unreachable — retrying";
+      document.getElementById("subtitle").textContent = "intake unreachable — retrying";
     });
 }
 

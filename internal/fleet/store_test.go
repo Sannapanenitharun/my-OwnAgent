@@ -294,3 +294,33 @@ func TestProcessCountSumsPerExecutableSeries(t *testing.T) {
 		t.Errorf("processes=%v, want 17 (sum across executables)", got)
 	}
 }
+
+func TestLoadAverageIsAbsentRatherThanZeroWithoutSeries(t *testing.T) {
+	// Windows agents ship no host.load.* series. Reporting 0.00 would render as
+	// a perfectly idle machine; the UI needs to tell absent from zero.
+	s := New(Limits{})
+	if err := s.Ingest("metrics", metricsBody("win", []string{"host.cpu.utilization"}, 0.5)); err != nil {
+		t.Fatal(err)
+	}
+	win := s.Fleet().Hosts[0]
+	if win.HasLoad {
+		t.Error("HasLoad true for a host that reported no load series")
+	}
+
+	body := []byte(`{"schema":"obsagent.v1","signal":"metrics","host":"lin","metrics":{"gauges":[
+		{"name":"host.load.1m","value":0.15},
+		{"name":"host.load.5m","value":0.33},
+		{"name":"host.load.15m","value":0.39},
+		{"name":"host.cpu.utilization","value":0.002,"attributes":{"state":"iowait"}}
+	]}}`)
+	if err := s.Ingest("metrics", body); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := s.Host("lin")
+	if !d.HasLoad || d.Load1 != 0.15 || d.Load5 != 0.33 || d.Load15 != 0.39 {
+		t.Errorf("load not carried: has=%v 1m=%v 5m=%v 15m=%v", d.HasLoad, d.Load1, d.Load5, d.Load15)
+	}
+	if d.IOWait < 0.19 || d.IOWait > 0.21 {
+		t.Errorf("iowait=%v, want ~0.2 (from cpu state=iowait)", d.IOWait)
+	}
+}

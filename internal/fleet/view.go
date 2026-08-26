@@ -50,6 +50,11 @@ type Summary struct {
 	MemUsed    float64 `json:"mem_used_bytes"`
 	MemTotal   float64 `json:"mem_total_bytes"`
 	DiskPct    float64 `json:"disk_percent"`
+	IOWait     float64 `json:"iowait_percent"`
+	Load1      float64 `json:"load_1m"`
+	Load5      float64 `json:"load_5m"`
+	Load15     float64 `json:"load_15m"`
+	HasLoad    bool    `json:"has_load"`
 	Uptime     float64 `json:"uptime_seconds"`
 	Processes  float64 `json:"processes"`
 
@@ -208,6 +213,20 @@ func (s *Store) summarise(h *host, now time.Time) Summary {
 	}
 	if v, ok := findSeries(h, "host.uptime_seconds", "", ""); ok {
 		sum.Uptime = v
+	}
+	if v, ok := findSeries(h, "host.cpu.utilization", "state", "iowait"); ok {
+		sum.IOWait = v * 100
+	}
+	// Load average is POSIX-only; Windows reports none, and a zero there would
+	// read as an idle machine rather than an unavailable metric.
+	if v, ok := findSeries(h, "host.load.1m", "", ""); ok {
+		sum.Load1, sum.HasLoad = v, true
+	}
+	if v, ok := findSeries(h, "host.load.5m", "", ""); ok {
+		sum.Load5 = v
+	}
+	if v, ok := findSeries(h, "host.load.15m", "", ""); ok {
+		sum.Load15 = v
 	}
 	// process.instances is emitted once per executable, so the fleet-level
 	// process count is their sum; any single series is meaningless on its own.
