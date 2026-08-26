@@ -20,13 +20,14 @@ import (
 
 // Limits bound what one Store may retain. Zero values fall back to defaults.
 type Limits struct {
-	Hosts         int           // distinct hosts before the stalest is evicted
-	SeriesPerHost int           // latest-value series kept per host
-	HistorySeries int           // host.* series that also keep a sample ring
-	HistoryPoints int           // samples per history series
-	LogsPerHost   int           // recent log lines kept per host
-	SpansPerHost  int           // recent spans kept per host
-	StaleAfter    time.Duration // silence before a host is reported stale
+	Hosts           int           // distinct hosts before the stalest is evicted
+	SeriesPerHost   int           // latest-value series kept per host
+	HistorySeries   int           // host.* series that also keep a sample ring
+	HistoryPoints   int           // samples per history series
+	LogsPerHost     int           // recent log lines kept per host
+	SpansPerHost    int           // recent spans kept per host
+	EntitiesPerHost int           // discovered entities kept per host
+	StaleAfter      time.Duration // silence before a host is reported stale
 }
 
 func (l Limits) withDefaults() Limits {
@@ -47,6 +48,9 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.SpansPerHost <= 0 {
 		l.SpansPerHost = 100
+	}
+	if l.EntitiesPerHost <= 0 {
+		l.EntitiesPerHost = 4096
 	}
 	if l.StaleAfter <= 0 {
 		l.StaleAfter = 90 * time.Second
@@ -74,14 +78,16 @@ type host struct {
 	firstSeen time.Time
 	lastSeen  time.Time
 
-	batchLogs    int64
-	batchMetrics int64
-	batchTraces  int64
-	dropped      int64
+	batchLogs      int64
+	batchMetrics   int64
+	batchTraces    int64
+	batchInventory int64
+	dropped        int64
 
-	series map[string]*series
-	logs   *logRing
-	spans  *spanRing
+	series   map[string]*series
+	entities map[string]*entity
+	logs     *logRing
+	spans    *spanRing
 }
 
 type series struct {
@@ -103,6 +109,7 @@ type envelope struct {
 	Logs      []logJSON         `json:"logs"`
 	Metrics   *metricsJSON      `json:"metrics"`
 	Spans     []spanJSON        `json:"spans"`
+	Events    []eventJSON       `json:"events"`
 }
 
 type logJSON struct {
@@ -121,6 +128,12 @@ type metricsJSON struct {
 type metricJSON struct {
 	Name       string            `json:"name"`
 	Value      float64           `json:"value"`
+	Attributes map[string]string `json:"attributes"`
+}
+
+type eventJSON struct {
+	Name       string            `json:"name"`
+	Timestamp  string            `json:"timestamp"`
 	Attributes map[string]string `json:"attributes"`
 }
 
@@ -170,6 +183,7 @@ func (s *Store) Ingest(signal string, body []byte) error {
 			firstSeen: now,
 			resource:  map[string]string{},
 			series:    map[string]*series{},
+			entities:  map[string]*entity{},
 			logs:      newLogRing(s.limits.LogsPerHost),
 			spans:     newSpanRing(s.limits.SpansPerHost),
 		}
@@ -211,6 +225,9 @@ func (s *Store) Ingest(signal string, body []byte) error {
 				Time:    ts,
 			})
 		}
+	case "inventory":
+		h.batchInventory++
+		s.ingestEventsLocked(h, env.Events)
 	case "metrics":
 		h.batchMetrics++
 		if env.Metrics != nil {

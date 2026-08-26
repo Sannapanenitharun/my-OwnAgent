@@ -21,6 +21,7 @@ type envelope struct {
 	Metrics   *metricsJSON      `json:"metrics,omitempty"`
 	Traces    []spanJSON        `json:"spans,omitempty"`
 	Raw       []rawJSON         `json:"raw,omitempty"`
+	Events    []eventJSON       `json:"events,omitempty"`
 }
 
 type logJSON struct {
@@ -61,6 +62,16 @@ type spanJSON struct {
 	StartNano  string            `json:"start_time_unix_nano,omitempty"`
 	EndNano    string            `json:"end_time_unix_nano,omitempty"`
 	Status     string            `json:"status,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
+// eventJSON carries a structured Event. Only discovery entity events are
+// exported: they are what lets a central view reconstruct what runs on a host,
+// which metrics alone cannot express.
+type eventJSON struct {
+	Name       string            `json:"name"`
+	Severity   string            `json:"severity,omitempty"`
+	Timestamp  string            `json:"timestamp"`
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
@@ -264,4 +275,43 @@ func mustJSON(v envelope) []byte {
 		return nil
 	}
 	return b
+}
+
+// encodeInventory ships discovery entity events so a central view can
+// reconstruct what runs on the host. Metrics cannot express this: a container
+// or service is an identity, not a number, and the per-entity attributes are
+// what the drill-down needs.
+//
+// The full retained set is sent each cycle rather than a delta. Entity events
+// are keyed and idempotent on the receiving side, so a repeated send costs
+// bandwidth but makes the view self-healing after a receiver restart or a
+// dropped batch.
+func encodeInventory(resource []platform.Attr, events []platform.Event, now time.Time) []byte {
+	out := make([]eventJSON, 0, len(events))
+	for _, ev := range events {
+		if !strings.HasPrefix(ev.Name, "discovery.entity.") {
+			continue
+		}
+		ts := ev.Timestamp
+		if ts.IsZero() {
+			ts = now
+		}
+		out = append(out, eventJSON{
+			Name:       ev.Name,
+			Severity:   ev.Severity.String(),
+			Timestamp:  ts.UTC().Format(time.RFC3339Nano),
+			Attributes: attrMap(ev.Attrs),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return mustJSON(envelope{
+		Schema:    payloadSchema,
+		Signal:    "inventory",
+		Timestamp: now.UTC().Format(time.RFC3339Nano),
+		Host:      hostID(resource),
+		Resource:  attrMap(resource),
+		Events:    out,
+	})
 }

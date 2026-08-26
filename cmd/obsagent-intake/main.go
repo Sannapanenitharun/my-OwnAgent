@@ -37,6 +37,7 @@ type envelope struct {
 	Metrics   json.RawMessage   `json:"metrics,omitempty"`
 	Spans     []json.RawMessage `json:"spans,omitempty"`
 	Raw       []json.RawMessage `json:"raw,omitempty"`
+	Events    []json.RawMessage `json:"events,omitempty"`
 }
 
 func main() {
@@ -55,6 +56,7 @@ func main() {
 	mux.HandleFunc("/v1/logs", s.handle("logs"))
 	mux.HandleFunc("/v1/metrics", s.handle("metrics"))
 	mux.HandleFunc("/v1/traces", s.handle("traces"))
+	mux.HandleFunc("/v1/inventory", s.handle("inventory"))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok\n")
@@ -94,10 +96,11 @@ type server struct {
 	// the JSONL archive on disk remains the complete record.
 	fleet *fleet.Store
 
-	mu       sync.Mutex
-	nLogs    atomic.Int64
-	nMetrics atomic.Int64
-	nTraces  atomic.Int64
+	mu         sync.Mutex
+	nLogs      atomic.Int64
+	nMetrics   atomic.Int64
+	nTraces    atomic.Int64
+	nInventory atomic.Int64
 }
 
 func (s *server) handle(signal string) http.HandlerFunc {
@@ -137,6 +140,9 @@ func (s *server) handle(signal string) http.HandlerFunc {
 		case "traces":
 			s.nTraces.Add(1)
 			log.Printf("traces host=%s spans=%d raw=%d ts=%s", env.Host, len(env.Spans), len(env.Raw), env.Timestamp)
+		case "inventory":
+			s.nInventory.Add(1)
+			log.Printf("inventory host=%s events=%d ts=%s", env.Host, len(env.Events), env.Timestamp)
 		}
 		// Fold into the fleet view before archiving: a parse failure here must
 		// not stop the batch reaching disk.

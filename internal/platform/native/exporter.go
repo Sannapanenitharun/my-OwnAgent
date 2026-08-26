@@ -24,6 +24,7 @@ const (
 	signalMetrics = "metrics"
 	signalLogs    = "logs"
 	signalTraces  = "traces"
+	signalInvent  = "inventory"
 
 	maxRetries = 3
 	maxBody    = 4 << 20
@@ -208,6 +209,7 @@ func (e *Exporter) flush(ctx context.Context) {
 	e.exportMetrics(ctx, now)
 	e.exportLogs(ctx, now)
 	e.exportTraces(ctx, now)
+	e.exportInventory(ctx, now)
 }
 
 func (e *Exporter) circuitOpen() bool {
@@ -252,6 +254,21 @@ func (e *Exporter) exportMetrics(ctx context.Context, now time.Time) {
 		return
 	}
 	e.post(ctx, signalMetrics, body)
+}
+
+// exportInventory ships discovery entity events. Without it the intake sees
+// only metrics, logs and traces, and a central view cannot say what runs on a
+// host -- only how much of it there is.
+func (e *Exporter) exportInventory(ctx context.Context, now time.Time) {
+	s, ok := e.inner.(platform.EventSnapshotter)
+	if !ok {
+		return
+	}
+	body := encodeInventory(e.cfg.Resource, s.EventSnapshot(), now)
+	if len(body) == 0 {
+		return
+	}
+	e.post(ctx, signalInvent, body)
 }
 
 func (e *Exporter) exportLogs(ctx context.Context, now time.Time) {

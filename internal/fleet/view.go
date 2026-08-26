@@ -58,13 +58,15 @@ type Summary struct {
 	Uptime     float64 `json:"uptime_seconds"`
 	Processes  float64 `json:"processes"`
 
-	Series       int   `json:"series"`
-	Dropped      int64 `json:"dropped_series"`
-	BatchLogs    int64 `json:"batches_logs"`
-	BatchMetrics int64 `json:"batches_metrics"`
-	BatchTraces  int64 `json:"batches_traces"`
-	LogCount     int   `json:"log_count"`
-	SpanCount    int   `json:"span_count"`
+	Series       int            `json:"series"`
+	Dropped      int64          `json:"dropped_series"`
+	BatchLogs    int64          `json:"batches_logs"`
+	BatchMetrics int64          `json:"batches_metrics"`
+	BatchTraces  int64          `json:"batches_traces"`
+	BatchInvent  int64          `json:"batches_inventory"`
+	InvCounts    map[string]int `json:"inventory_counts,omitempty"`
+	LogCount     int            `json:"log_count"`
+	SpanCount    int            `json:"span_count"`
 }
 
 // Fleet is the whole-fleet document the list page polls.
@@ -88,10 +90,11 @@ type SeriesView struct {
 // Detail is everything the page shows for one host.
 type Detail struct {
 	Summary
-	Resource map[string]string `json:"resource,omitempty"`
-	Metrics  []SeriesView      `json:"metrics"`
-	Logs     []LogLine         `json:"logs"`
-	Spans    []Span            `json:"spans"`
+	Resource  map[string]string `json:"resource,omitempty"`
+	Inventory Inventory         `json:"inventory"`
+	Metrics   []SeriesView      `json:"metrics"`
+	Logs      []LogLine         `json:"logs"`
+	Spans     []Span            `json:"spans"`
 }
 
 // Fleet returns the summary of every known host, freshest first.
@@ -133,11 +136,12 @@ func (s *Store) Host(name string) (Detail, bool) {
 	}
 	now := s.now()
 	d := Detail{
-		Summary:  s.summarise(h, now),
-		Resource: map[string]string{},
-		Metrics:  make([]SeriesView, 0, len(h.series)),
-		Logs:     h.logs.snapshot(),
-		Spans:    h.spans.snapshot(),
+		Summary:   s.summarise(h, now),
+		Resource:  map[string]string{},
+		Metrics:   make([]SeriesView, 0, len(h.series)),
+		Logs:      h.logs.snapshot(),
+		Spans:     h.spans.snapshot(),
+		Inventory: s.inventoryLocked(h),
 	}
 	for k, v := range h.resource {
 		d.Resource[k] = v
@@ -180,6 +184,8 @@ func (s *Store) summarise(h *host, now time.Time) Summary {
 		BatchLogs:    h.batchLogs,
 		BatchMetrics: h.batchMetrics,
 		BatchTraces:  h.batchTraces,
+		BatchInvent:  h.batchInventory,
+		InvCounts:    s.inventoryCountsLocked(h),
 		LogCount:     h.logs.len(),
 		SpanCount:    h.spans.len(),
 	}

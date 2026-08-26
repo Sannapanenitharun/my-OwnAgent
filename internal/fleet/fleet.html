@@ -153,6 +153,28 @@
         <p class="hint" id="hosts-hint">Click a hostname to inspect its metrics, logs, and traces.</p>
       </section>
 
+      <section class="view" id="view-inventory">
+        <p class="hint"><button type="button" class="chip" id="back-to-hosts">← Back to Hosts</button></p>
+        <div class="host-head">
+          <div class="left">
+            <h2 id="inv-host-name">—</h2>
+            <span class="pill" id="inv-host-id"></span>
+          </div>
+        </div>
+        <div class="chips" id="inv-chips">
+          <button type="button" class="chip" data-inv="containers">Containers</button>
+          <button type="button" class="chip" data-inv="services">Services</button>
+          <button type="button" class="chip" data-inv="processes">Applications</button>
+          <button type="button" class="chip" data-inv="endpoints">Endpoints</button>
+          <button type="button" class="chip" data-inv="other">Other</button>
+        </div>
+        <p class="hint" id="inv-count"></p>
+        <div class="panel"><table>
+          <thead><tr><th>Name</th><th>Kind</th><th>Detail</th><th>CPU</th><th>Memory (RSS)</th><th>Count</th></tr></thead>
+          <tbody id="inv-table"></tbody>
+        </table></div>
+      </section>
+
       <section class="view" id="view-metrics">
         <div class="chips" id="host-chips-metrics"></div>
         <div class="host-head" style="margin-bottom:12px">
@@ -352,9 +374,15 @@ function renderHosts() {
   }).join("");
 
   Array.prototype.forEach.call(document.querySelectorAll(".host-row"), function (tr) {
-    tr.addEventListener("click", function () {
+    tr.addEventListener("click", function (e) {
       selected = tr.getAttribute("data-host");
-      loadDetail().then(render);
+      // The hostname opens the drill-down; anywhere else in the row only
+      // selects the host for the other views.
+      var drill = e.target && e.target.classList.contains("link");
+      loadDetail().then(function () {
+        if (drill) openInventory();
+        render();
+      });
     });
   });
 
@@ -583,13 +611,101 @@ function renderOverview() {
     : '<tr><td colspan="7" class="empty">No hosts yet.</td></tr>';
 }
 
+/* ---------- inventory drill-down ---------- */
+
+var invTab = "containers";
+
+function openInventory() {
+  var h = current();
+  if (!h) return;
+  document.getElementById("inv-host-name").textContent = h.host;
+  document.getElementById("inv-host-id").textContent = h.host_id || "";
+  selectFirstPopulatedInvTab();
+  view = "inventory";
+  Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (b) {
+    b.classList.remove("active");
+  });
+}
+
+// Containers is first in the chip row but is empty on any host without a
+// container runtime, so opening there shows "nothing yet" while services and
+// applications sit populated one click away. Open on a tab that has data.
+function selectFirstPopulatedInvTab() {
+  var inv = (detail && detail.inventory) || {};
+  var order = ["containers", "services", "processes", "endpoints", "other"];
+  for (var i = 0; i < order.length; i++) {
+    if ((inv[order[i]] || []).length > 0) { invTab = order[i]; break; }
+  }
+}
+
+// "Wait for collection cycles" is wrong when the module that would fill the tab
+// is unsupported on this host: waiting never helps. The intake cannot see
+// module state directly, but an agent that ships no entity events at all has
+// nothing discovering, which is the distinction worth drawing.
+function emptyInvReason() {
+  var label = invTab === "processes" ? "applications" : invTab;
+  if (!detail || !detail.batches_inventory) {
+    return "No " + label + " received from this host. Its agent has not shipped any " +
+      "discovery entities yet — either the discovery module is still on its first " +
+      "cycle, or this agent predates inventory export.";
+  }
+  if (invTab === "containers") {
+    return "No containers on this host. The container module reports nothing on a " +
+      "machine with no container runtime, so this stays empty rather than filling later.";
+  }
+  return "No " + label + " observed yet. Wait for the next discovery cycle.";
+}
+
+function renderInventory() {
+  var inv = (detail && detail.inventory) || {};
+  // Show each category's size on its chip, so an empty tab is visible without
+  // clicking into it.
+  Array.prototype.forEach.call(document.querySelectorAll("#inv-chips .chip"), function (b) {
+    var n = (inv[b.dataset.inv] || []).length;
+    var base = b.dataset.label || (b.dataset.label = b.textContent.trim());
+    b.textContent = n ? base + " " + n : base;
+    b.style.opacity = n ? "" : ".55";
+    b.classList.toggle("active", b.dataset.inv === invTab);
+  });
+
+  var list = inv[invTab] || [];
+  document.getElementById("inv-count").textContent = list.length
+    ? list.length + " " + (invTab === "processes" ? "applications" : invTab) +
+      " on " + (detail ? detail.host : "")
+    : emptyInvReason();
+
+  var showCPU = invTab === "processes";
+  document.getElementById("inv-table").innerHTML = list.length
+    ? list.map(function (it) {
+        return '<tr><td class="mono">' + esc(it.name) + "</td><td>" + esc(it.kind || invTab) +
+          '</td><td class="mono">' + esc(it.detail || "") + "</td><td>" +
+          (showCPU && it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "—") + "</td><td>" +
+          (showCPU && it.memory ? bytes(it.memory) : "—") + "</td><td>" +
+          (it.count ? num(it.count) : "—") + "</td></tr>";
+      }).join("")
+    : '<tr><td colspan="6" class="empty">Nothing in this category</td></tr>';
+}
+
+Array.prototype.forEach.call(document.querySelectorAll("#inv-chips .chip"), function (btn) {
+  btn.addEventListener("click", function () {
+    invTab = btn.dataset.inv;
+    renderInventory();
+  });
+});
+document.getElementById("back-to-hosts").addEventListener("click", function () {
+  view = "hosts";
+  document.querySelector('.nav-item[data-view="hosts"]').classList.add("active");
+  render();
+});
+
 var TITLES = {
   hosts: ["Hosts", "Every agent reporting to this intake"],
   metrics: ["Metrics", "Live series for the selected host"],
   logs: ["Logs", "Recent log lines received by this intake"],
   traces: ["Traces", "Spans received by this intake"],
   modules: ["Modules", "Agent module state, from shipped telemetry"],
-  overview: ["Overview", "Fleet totals and what this intake retains"]
+  overview: ["Overview", "Fleet totals and what this intake retains"],
+  inventory: ["Host inventory", "Containers, services, and applications on this host"]
 };
 
 function render() {
@@ -608,6 +724,7 @@ function render() {
   });
 
   if (view === "hosts") { renderHosts(); return; }
+  if (view === "inventory") { renderInventory(); return; }
   renderHostChips("host-chips-" + view);
   if (view === "metrics") renderMetrics();
   if (view === "logs") renderLogs();
