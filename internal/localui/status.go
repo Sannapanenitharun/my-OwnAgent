@@ -20,20 +20,20 @@ import (
 
 // Status is the JSON document the UI polls.
 type Status struct {
-	Hostname    string      `json:"hostname"`
-	Identity    Identity    `json:"identity"`
-	Host        HostDetails `json:"host"`
-	Health      string      `json:"health"`
-	StartedAt   time.Time   `json:"started_at,omitempty"`
-	Revision    uint64      `json:"config_revision"`
-	Modules     []Module    `json:"modules"`
-	Highlights  []Highlight `json:"highlights"`
-	Metrics     []Metric    `json:"metrics"`
-	Counters    []Counter   `json:"counters"`
-	Logs        []LogLine       `json:"logs"`
-	Traces      []TraceRow      `json:"traces"`
-	Inventory   HostInventory   `json:"inventory"`
-	Diagnostics []Diag          `json:"diagnostics"`
+	Hostname    string        `json:"hostname"`
+	Identity    Identity      `json:"identity"`
+	Host        HostDetails   `json:"host"`
+	Health      string        `json:"health"`
+	StartedAt   time.Time     `json:"started_at,omitempty"`
+	Revision    uint64        `json:"config_revision"`
+	Modules     []Module      `json:"modules"`
+	Highlights  []Highlight   `json:"highlights"`
+	Metrics     []Metric      `json:"metrics"`
+	Counters    []Counter     `json:"counters"`
+	Logs        []LogLine     `json:"logs"`
+	Traces      []TraceRow    `json:"traces"`
+	Inventory   HostInventory `json:"inventory"`
+	Diagnostics []Diag        `json:"diagnostics"`
 }
 
 // HostInventory is what is running / discovered on this host for drill-down.

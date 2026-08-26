@@ -13,17 +13,42 @@ Datadog's OTLP intake.
 **Linux or macOS**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Sannapanenitharun/my-OwnAgent/main/packaging/get.sh | sudo sh -s -- https://INTAKE_HOST:8080
+curl -fsSL https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.sh | sudo bash
 ```
 
 Detects `linux`/`darwin` and `amd64`/`arm64`, downloads the matching release
-binary, installs a service (systemd or launchd), and points export at your intake.
+binary, and installs a service (systemd or launchd). With no argument the agent
+collects locally and serves its dashboard on `http://127.0.0.1:8181/`.
+
+To ship to a native intake in the same step, pass the URL:
+
+```bash
+curl -fsSL https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.sh \
+  | sudo bash -s -- http://INTAKE_HOST:8090
+```
 
 **Windows** (PowerShell as Administrator)
 
 ```powershell
-$env:OBSAGENT_EXPORT_ENDPOINT='https://INTAKE_HOST:8080'; irm https://raw.githubusercontent.com/Sannapanenitharun/my-OwnAgent/main/packaging/get.ps1 | iex
+irm https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.ps1 | iex
 ```
+
+**The intake sink** (Linux, if you want one on the same host)
+
+```bash
+curl -fsSL https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get-intake.sh | sudo bash
+```
+
+Install the intake first, then point the agent at `http://127.0.0.1:8090`.
+
+Every asset — binaries, the installer scripts themselves, `agent.example.json`,
+and the systemd unit — is published on the release and fetched from
+`releases/latest/download/`. Nothing is read from a branch, so the script and
+the binary it installs can never drift apart, and nothing goes through
+`api.github.com`, whose unauthenticated 60-requests-per-hour-per-IP limit
+otherwise breaks installs from behind shared NAT.
+
+Pin a version with `OBSAGENT_VERSION=v0.4.2` in the environment.
 
 ## Many EC2s
 

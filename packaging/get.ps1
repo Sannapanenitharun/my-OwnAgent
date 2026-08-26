@@ -3,11 +3,17 @@
 .SYNOPSIS
   Auto-detect Windows arch, download observability-agent, install as a Windows service.
 
-.EXAMPLE
-  irm https://raw.githubusercontent.com/Sannapanenitharun/my-OwnAgent/main/packaging/get.ps1 | iex
+.DESCRIPTION
+  Assets are pulled straight from the release download URL — never from a branch
+  and never through api.github.com — so the script and the binary it installs
+  cannot drift apart, and the unauthenticated API rate limit never applies.
 
-  Or with an explicit intake URL:
-  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/Sannapanenitharun/my-OwnAgent/main/packaging/get.ps1))) -Endpoint https://intake.example.com:8080
+.EXAMPLE
+  irm https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.ps1 | iex
+
+.EXAMPLE
+  With an explicit intake URL:
+  & ([scriptblock]::Create((irm https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.ps1))) -Endpoint http://intake.example.com:8090
 #>
 param(
     [Parameter(Mandatory = $false)]
@@ -19,56 +25,38 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not $Endpoint) {
-    Write-Host "Enter native intake URL (e.g. https://intake.example.com:8080):"
-    $Endpoint = Read-Host
-}
-if (-not $Endpoint) {
-    throw "Endpoint is required (OBSAGENT_EXPORT_ENDPOINT or -Endpoint)"
-}
-
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
     "AMD64" { "amd64" }
     "ARM64" { "arm64" }
     default { throw "unsupported arch: $env:PROCESSOR_ARCHITECTURE" }
 }
 $asset = "observability-agent-windows-$arch.exe"
-Write-Host "detected windows/$arch"
 
 if ($Version -eq "latest") {
-    $api = "https://api.github.com/repos/$Repo/releases/latest"
+    $dl = "https://github.com/$Repo/releases/latest/download"
 } else {
-    $api = "https://api.github.com/repos/$Repo/releases/tags/$Version"
+    $dl = "https://github.com/$Repo/releases/download/$Version"
 }
-
-Write-Host "resolving release from $api"
-$release = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "obsagent-get" }
-$assetMeta = $release.assets | Where-Object { $_.name -eq $asset } | Select-Object -First 1
-if (-not $assetMeta) {
-    throw "could not find $asset in release assets"
-}
+Write-Host "detected windows/$arch, installing $Version from $dl"
 
 $root = Join-Path $env:ProgramFiles "observability-agent"
 $bin = Join-Path $root "observability-agent.exe"
 $cfg = Join-Path $root "agent.json"
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 
-Write-Host "downloading $($assetMeta.browser_download_url)"
-Invoke-WebRequest -Uri $assetMeta.browser_download_url -OutFile $bin -UseBasicParsing
+Write-Host "downloading $dl/$asset"
+Invoke-WebRequest -Uri "$dl/$asset" -OutFile $bin -UseBasicParsing
 
-$exampleUrl = "https://raw.githubusercontent.com/$Repo/main/agent.example.json"
-try {
-    Invoke-WebRequest -Uri $exampleUrl -OutFile $cfg -UseBasicParsing
-} catch {
-    '{"schema_version":1,"modules":{"host":{"enabled":true},"process":{"enabled":true},"logs":{"enabled":true},"otel-engine":{"enabled":true},"discovery":{"enabled":true}},"export":{"native":{"endpoint":""}}}' |
-        Set-Content -Path $cfg -Encoding utf8
+# Config ships in the same release, so it always matches the binary. An existing
+# agent.json is left alone: re-running the installer must not discard local edits.
+if (-not (Test-Path $cfg)) {
+    try {
+        Invoke-WebRequest -Uri "$dl/agent.example.json" -OutFile $cfg -UseBasicParsing
+    } catch {
+        '{"schema_version":1,"modules":{"host":{"enabled":true},"process":{"enabled":true},"logs":{"enabled":true},"otel-engine":{"enabled":true},"discovery":{"enabled":true}},"export":{"native":{"endpoint":""}}}' |
+            Set-Content -Path $cfg -Encoding utf8
+    }
 }
-
-$json = Get-Content $cfg -Raw | ConvertFrom-Json
-if (-not $json.export) { $json | Add-Member -NotePropertyName export -NotePropertyValue ([pscustomobject]@{}) }
-if (-not $json.export.native) { $json.export | Add-Member -NotePropertyName native -NotePropertyValue ([pscustomobject]@{}) }
-$json.export.native.endpoint = $Endpoint
-($json | ConvertTo-Json -Depth 30) | Set-Content -Path $cfg -Encoding utf8
 
 $svcName = "observability-agent"
 $existing = Get-Service -Name $svcName -ErrorAction SilentlyContinue
@@ -80,10 +68,19 @@ if ($existing) {
 
 $binPath = "`"$bin`" --config `"$cfg`""
 sc.exe create $svcName binPath= $binPath start= auto DisplayName= "observability-agent" | Out-Null
-# Persist intake for the service process as well.
-[Environment]::SetEnvironmentVariable("OBSAGENT_EXPORT_ENDPOINT", $Endpoint, "Machine")
 sc.exe description $svcName "Host observability agent (metrics, logs, OTLP)" | Out-Null
+
+# The endpoint travels as an environment variable: the config loader treats
+# OBSAGENT_EXPORT_ENDPOINT as an override, so the JSON needs no rewriting.
+if ($Endpoint) {
+    [Environment]::SetEnvironmentVariable("OBSAGENT_EXPORT_ENDPOINT", $Endpoint, "Machine")
+}
 Start-Service $svcName
 
-Write-Host "installed $bin → $Endpoint (Windows service)"
+if ($Endpoint) {
+    Write-Host "installed $bin -> exporting to $Endpoint (Windows service)"
+} else {
+    Write-Host "installed $bin -> collecting locally; dashboard on http://127.0.0.1:8181/"
+    Write-Host "to ship data later, re-run with -Endpoint URL"
+}
 & $bin --check --config $cfg

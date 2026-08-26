@@ -20,6 +20,20 @@ See [docs/AWS_AGENT.md](docs/AWS_AGENT.md).
 > [docs/review/process-module-readiness.md](docs/review/process-module-readiness.md)
 > for measured results, defects found, and known limitations.
 
+## Install on a server
+
+```bash
+curl -fsSL https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.sh | sudo bash
+```
+
+Auto-detects OS and arch, installs a systemd (or launchd) service, and serves
+the dashboard on `http://127.0.0.1:8181/`. Add ` -s -- http://INTAKE_HOST:8090`
+to ship to a native intake in the same step. Windows:
+`irm https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.ps1 | iex`.
+
+See [docs/AWS_AGENT.md](docs/AWS_AGENT.md) for the intake sink, version
+pinning, and fleet identity.
+
 ## Build and run
 
 ```bash

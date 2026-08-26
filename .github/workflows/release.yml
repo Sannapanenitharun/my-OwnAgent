@@ -1,0 +1,102 @@
+# Publishes everything the one-line installers fetch. The installers resolve
+# assets through https://github.com/OWNER/REPO/releases/latest/download/<name>,
+# so the scripts themselves ship as release assets alongside the binaries:
+# script and binary are then always from the same release and cannot drift.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'tag to build and publish (e.g. v0.4.2)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      # go.sum is empty while the module has zero third-party deps; some runner
+      # images warn-and-fail the setup-go cache without it.
+      - run: |
+          if [ ! -f go.sum ]; then printf '\n' > go.sum; fi
+
+      - name: resolve version
+        id: v
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      # Guard: never publish a tag that cannot pass the gates the agent is
+      # built on. A broken binary behind a one-line installer is worse than
+      # no release at all.
+      - name: vet and test
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: build binaries
+        run: make release VERSION=${{ steps.v.outputs.version }}
+
+      # The installers are assets, not branch files. Anything get.sh or
+      # get.ps1 downloads at runtime has to be published here too.
+      - name: stage installer assets
+        run: |
+          cp packaging/get.sh                     build/release/
+          cp packaging/get-intake.sh              build/release/
+          cp packaging/get.ps1                    build/release/
+          cp packaging/observability-agent.service build/release/
+          cp agent.example.json                   build/release/
+          # A CRLF get.sh dies under `sudo bash` with a bad-interpreter error.
+          for f in build/release/get.sh build/release/get-intake.sh; do
+            if grep -qU $'\r' "$f"; then echo "CRLF in $f" >&2; exit 1; fi
+          done
+
+      - name: verify assets
+        run: |
+          cd build/release
+          ls -la
+          # Every name the installers resolve must exist, or a one-liner is dead.
+          for want in observability-agent-linux-amd64 observability-agent-linux-arm64 \
+                      observability-agent-darwin-amd64 observability-agent-darwin-arm64 \
+                      observability-agent-windows-amd64.exe \
+                      obsagent-intake-linux-amd64 obsagent-intake-linux-arm64 \
+                      get.sh get-intake.sh get.ps1 \
+                      agent.example.json observability-agent.service; do
+            [ -f "$want" ] || { echo "missing release asset: $want" >&2; exit 1; }
+          done
+          # Checksums cover the binaries only; regenerate over everything
+          # shipped. Removing it first keeps the glob from racing the write.
+          rm -f SHA256SUMS
+          sha256sum -- * > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          sh -n get.sh
+          sh -n get-intake.sh
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.v.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ steps.v.outputs.tag }}" \
+            --generate-notes \
+            build/release/* \
+          || gh release upload "${{ steps.v.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --clobber \
+            build/release/*

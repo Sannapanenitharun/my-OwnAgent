@@ -1,26 +1,28 @@
 #!/bin/sh
 # Auto-detect Linux or macOS, download the matching agent, install as a service.
 #
-#   curl -fsSL https://raw.githubusercontent.com/Sannapanenitharun/my-OwnAgent/main/packaging/get.sh \
-#     | sudo sh -s -- https://INTAKE_HOST:8080
+#   curl -fsSL https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.sh | sudo bash
+#
+# Optionally point it at a native intake in the same step:
+#   curl -fsSL .../releases/latest/download/get.sh | sudo bash -s -- http://intake.example.com:8090
 #
 # Windows (PowerShell as Administrator):
-#   irm https://raw.githubusercontent.com/Sannapanenitharun/my-OwnAgent/main/packaging/get.ps1 | iex
-#   (pass -Endpoint https://INTAKE_HOST:8080)
+#   irm https://github.com/Sannapanenitharun/my-OwnAgent/releases/latest/download/get.ps1 | iex
+#
+# Every asset is fetched from the release itself, never from a branch and never
+# through api.github.com. That keeps the script and the binary it installs from
+# ever drifting apart, and avoids the unauthenticated API rate limit (60/hour
+# per IP) that makes API-based installers fail behind shared NAT.
 #
 # Optional env:
-#   OBSAGENT_VERSION=v0.4.0
+#   OBSAGENT_VERSION=v0.4.2          pin a release (default: latest)
 #   OBSAGENT_REPO=owner/name
+#   OBSAGENT_EXPORT_ENDPOINT=URL     same as the positional argument
 set -eu
 
-ENDPOINT=${1:-}
+ENDPOINT=${1:-${OBSAGENT_EXPORT_ENDPOINT:-}}
 REPO=${OBSAGENT_REPO:-Sannapanenitharun/my-OwnAgent}
 VERSION=${OBSAGENT_VERSION:-latest}
-
-if [ -z "$ENDPOINT" ]; then
-  echo "usage: curl -fsSL .../packaging/get.sh | sudo sh -s -- https://intake.example.com:8080" >&2
-  exit 1
-fi
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root (sudo)" >&2
@@ -31,7 +33,7 @@ case "$(uname -s)" in
   Linux*)  OS=linux ;;
   Darwin*) OS=darwin ;;
   *)
-    echo "unsupported OS: $(uname -s) — on Windows use packaging/get.ps1" >&2
+    echo "unsupported OS: $(uname -s) — on Windows use get.ps1" >&2
     exit 1
     ;;
 esac
@@ -45,32 +47,28 @@ case "$(uname -m)" in
     ;;
 esac
 
+if [ "$VERSION" = "latest" ]; then
+  DL="https://github.com/${REPO}/releases/latest/download"
+else
+  DL="https://github.com/${REPO}/releases/download/${VERSION}"
+fi
+
 ASSET="observability-agent-${OS}-${ARCH}"
-echo "detected ${OS}/${ARCH}"
+echo "detected ${OS}/${ARCH}, installing ${VERSION} from ${DL}"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-if [ "$VERSION" = "latest" ]; then
-  API="https://api.github.com/repos/${REPO}/releases/latest"
-else
-  API="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
-fi
-
-echo "resolving release from ${API}"
-ASSET_URL=$(curl -fsSL "$API" | sed -n 's/.*"browser_download_url": *"\([^"]*'"${ASSET}"'[^"]*\)".*/\1/p' | head -n 1)
-if [ -z "$ASSET_URL" ]; then
-  echo "could not find ${ASSET} in release assets for ${VERSION}" >&2
-  exit 1
-fi
-
 BIN="$TMP/observability-agent"
-echo "downloading $ASSET_URL"
-curl -fsSL "$ASSET_URL" -o "$BIN"
+curl -fsSL "$DL/$ASSET" -o "$BIN" || {
+  echo "could not download $DL/$ASSET" >&2
+  exit 1
+}
 chmod 0755 "$BIN"
 
-RAW="https://raw.githubusercontent.com/${REPO}/main"
-curl -fsSL "$RAW/agent.example.json" -o "$TMP/agent.example.json" || true
+# Config and unit file come from the same release, so they always match the
+# binary. Falls back to a minimal inline config if the asset is absent.
+curl -fsSL "$DL/agent.example.json" -o "$TMP/agent.example.json" || true
 
 write_config() {
   confdir=$1
@@ -78,45 +76,68 @@ write_config() {
   mkdir -p "$confdir" "$bindir"
   install -m 0755 "$BIN" "$bindir/observability-agent"
   if [ ! -f "$confdir/agent.json" ]; then
-    if [ -f "$TMP/agent.example.json" ]; then
+    if [ -s "$TMP/agent.example.json" ]; then
       install -m 0644 "$TMP/agent.example.json" "$confdir/agent.json"
     else
-      printf '%s\n' '{"schema_version":1,"modules":{"host":{"enabled":true},"process":{"enabled":true},"logs":{"enabled":true},"otel-engine":{"enabled":true},"discovery":{"enabled":true},"container":{"enabled":true},"statsd":{"enabled":true,"settings":{"listen":""}},"httpcheck":{"enabled":true,"settings":{"targets":"ui=http://127.0.0.1:8181/,intake=http://127.0.0.1:8090/healthz"}}}}' > "$confdir/agent.json"
+      printf '%s\n' '{"schema_version":1,"modules":{"host":{"enabled":true},"process":{"enabled":true},"logs":{"enabled":true},"otel-engine":{"enabled":true},"discovery":{"enabled":true},"container":{"enabled":true},"statsd":{"enabled":true,"settings":{"listen":""}}}}' > "$confdir/agent.json"
       chmod 0644 "$confdir/agent.json"
     fi
   fi
-  # Bake intake into JSON so the agent works even without an env file.
-  if command -v python3 >/dev/null 2>&1; then
-    ENDPOINT="$ENDPOINT" python3 - "$confdir/agent.json" <<'PY'
-import json, os, sys
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
-    cfg = json.load(f)
-cfg.setdefault("export", {}).setdefault("native", {})["endpoint"] = os.environ["ENDPOINT"]
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-PY
+}
+
+# The endpoint travels as OBSAGENT_EXPORT_ENDPOINT rather than being rewritten
+# into the JSON: the config loader treats it as an override, so no JSON parser
+# (and no python3) is needed on the target host.
+report() {
+  if [ -n "$ENDPOINT" ]; then
+    echo "installed $1 → exporting to $ENDPOINT"
   else
-    printf 'OBSAGENT_EXPORT_ENDPOINT=%s\n' "$ENDPOINT" > "$confdir/agent.env"
-    chmod 0600 "$confdir/agent.env"
+    echo "installed $1 → collecting locally; dashboard on http://127.0.0.1:8181/"
+    echo "to ship data later, set OBSAGENT_EXPORT_ENDPOINT and restart the service"
   fi
 }
 
 install_linux() {
   write_config /etc/observability-agent /usr/bin
-  printf 'OBSAGENT_EXPORT_ENDPOINT=%s\n' "$ENDPOINT" > /etc/observability-agent/agent.env
-  chmod 0600 /etc/observability-agent/agent.env
-  curl -fsSL "$RAW/packaging/observability-agent.service" -o /etc/systemd/system/observability-agent.service
+  if [ -n "$ENDPOINT" ]; then
+    printf 'OBSAGENT_EXPORT_ENDPOINT=%s\n' "$ENDPOINT" > /etc/observability-agent/agent.env
+    chmod 0600 /etc/observability-agent/agent.env
+  fi
+  if ! curl -fsSL "$DL/observability-agent.service" -o /etc/systemd/system/observability-agent.service; then
+    cat > /etc/systemd/system/observability-agent.service <<'UNIT'
+[Unit]
+Description=observability-agent — host metrics, logs and OTLP receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/observability-agent --config /etc/observability-agent/agent.json
+EnvironmentFile=-/etc/observability-agent/agent.env
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=40s
+User=root
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  fi
   systemctl daemon-reload
   systemctl enable --now observability-agent.service
-  echo "installed /usr/bin/observability-agent → $ENDPOINT (systemd)"
+  report /usr/bin/observability-agent
   /usr/bin/observability-agent --check --config /etc/observability-agent/agent.json || true
 }
 
 install_darwin() {
   write_config /usr/local/etc/observability-agent /usr/local/bin
   PLIST=/Library/LaunchDaemons/com.obsagent.observability-agent.plist
+  if [ -n "$ENDPOINT" ]; then
+    ENVBLOCK=$(printf '  <key>EnvironmentVariables</key>\n  <dict>\n    <key>OBSAGENT_EXPORT_ENDPOINT</key>\n    <string>%s</string>\n  </dict>' "$ENDPOINT")
+  else
+    ENVBLOCK=""
+  fi
   cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -130,11 +151,7 @@ install_darwin() {
     <string>--config</string>
     <string>/usr/local/etc/observability-agent/agent.json</string>
   </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>OBSAGENT_EXPORT_ENDPOINT</key>
-    <string>${ENDPOINT}</string>
-  </dict>
+${ENVBLOCK}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -151,7 +168,7 @@ EOF
   launchctl bootstrap system "$PLIST"
   launchctl enable system/com.obsagent.observability-agent
   launchctl kickstart -k system/com.obsagent.observability-agent
-  echo "installed /usr/local/bin/observability-agent → $ENDPOINT (launchd)"
+  report /usr/local/bin/observability-agent
   /usr/local/bin/observability-agent --check --config /usr/local/etc/observability-agent/agent.json || true
 }
 

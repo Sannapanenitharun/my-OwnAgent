@@ -86,16 +86,20 @@ crosscompile:
 		fi; \
 	done
 
-## release: per-platform binaries with checksums
+## release: per-platform binaries with checksums. Ships BOTH the agent and the
+## intake sink — packaging/get-intake.sh resolves obsagent-intake-* from these
+## same release assets, so omitting them breaks the intake one-liner.
 .PHONY: release
 release:
 	@mkdir -p $(BUILDDIR)/release
 	@for p in $(PLATFORMS); do \
 		os=$${p%/*}; arch=$${p#*/}; ext=""; \
 		[ "$$os" = "windows" ] && ext=".exe"; \
-		out=$(BUILDDIR)/release/$(BINARY)-$$os-$$arch$$ext; \
-		echo "building $$out"; \
-		GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o $$out ./cmd/$(BINARY) || exit 1; \
+		for c in $(BINARY) obsagent-intake; do \
+			out=$(BUILDDIR)/release/$$c-$$os-$$arch$$ext; \
+			echo "building $$out"; \
+			GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $$out ./cmd/$$c || exit 1; \
+		done; \
 	done
 	cd $(BUILDDIR)/release && sha256sum * > SHA256SUMS
 
