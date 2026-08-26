@@ -3,6 +3,10 @@
 //
 // It is a development and demo backend, not a production Telemetry Plane.
 // Run it, point export.native.endpoint at it, and watch batches arrive.
+//
+// Because every agent in a fleet ships here, the intake is also the only place
+// that sees all of them at once. It therefore serves a fleet UI on a second
+// listener: the agent's own :8181 page reports one host and cannot show more.
 package main
 
 import (
@@ -17,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/obsagent/observability-agent/internal/fleet"
 )
 
 const schema = "obsagent.v1"
@@ -37,9 +43,14 @@ func main() {
 	listen := flag.String("listen", envOr("INTAKE_LISTEN", "0.0.0.0:8080"), "listen address")
 	apiKey := flag.String("api-key", os.Getenv("INTAKE_API_KEY"), "optional X-API-Key value; empty disables auth")
 	dir := flag.String("store", "", "optional directory to append JSONL files (logs.jsonl, metrics.jsonl, traces.jsonl)")
+	uiListen := flag.String("ui-listen", envOr("INTAKE_UI_LISTEN", "127.0.0.1:8181"), "fleet UI address; 'off' disables")
 	flag.Parse()
 
-	s := &server{apiKey: strings.TrimSpace(*apiKey), store: strings.TrimSpace(*dir)}
+	s := &server{
+		apiKey: strings.TrimSpace(*apiKey),
+		store:  strings.TrimSpace(*dir),
+		fleet:  fleet.New(fleet.Limits{}),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/logs", s.handle("logs"))
 	mux.HandleFunc("/v1/metrics", s.handle("metrics"))
@@ -57,6 +68,18 @@ func main() {
 			s.nLogs.Load(), s.nMetrics.Load(), s.nTraces.Load())
 	})
 
+	// The fleet UI runs on its own listener so ingest can be exposed to a
+	// network while the UI stays on loopback, or the reverse.
+	if fleet.AddrEnabled(*uiListen) {
+		ui := &fleet.Server{Store: s.fleet}
+		go func() {
+			log.Printf("fleet UI listening on http://%s/", *uiListen)
+			if err := http.ListenAndServe(*uiListen, ui.Handler()); err != nil {
+				log.Fatalf("fleet UI: %v", err)
+			}
+		}()
+	}
+
 	log.Printf("obsagent-intake listening on http://%s (api-key auth %v)", *listen, *apiKey != "")
 	if err := http.ListenAndServe(*listen, mux); err != nil {
 		log.Fatal(err)
@@ -66,6 +89,10 @@ func main() {
 type server struct {
 	apiKey string
 	store  string
+
+	// fleet is the in-memory multi-host view the UI renders. It is bounded;
+	// the JSONL archive on disk remains the complete record.
+	fleet *fleet.Store
 
 	mu       sync.Mutex
 	nLogs    atomic.Int64
@@ -110,6 +137,13 @@ func (s *server) handle(signal string) http.HandlerFunc {
 		case "traces":
 			s.nTraces.Add(1)
 			log.Printf("traces host=%s spans=%d raw=%d ts=%s", env.Host, len(env.Spans), len(env.Raw), env.Timestamp)
+		}
+		// Fold into the fleet view before archiving: a parse failure here must
+		// not stop the batch reaching disk.
+		if s.fleet != nil {
+			if err := s.fleet.Ingest(signal, body); err != nil {
+				log.Printf("fleet: %v", err)
+			}
 		}
 		if s.store != "" {
 			if err := s.append(signal, body); err != nil {
