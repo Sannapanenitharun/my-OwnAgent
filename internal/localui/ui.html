@@ -296,14 +296,52 @@
       return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + " " + u[i];
     }
 
+    // Containers is first in the chip row but is empty on any host without a
+    // container runtime, so opening there shows "nothing yet" while services and
+    // applications sit populated one click away. Open on a tab that has data.
+    function selectFirstPopulatedInvTab() {
+      const inv = (last && last.inventory) || {};
+      const order = ["containers", "services", "processes", "endpoints", "other"];
+      const first = order.find(k => (inv[k] || []).length > 0);
+      if (!first) return;
+      invTab = first;
+      document.querySelectorAll("#inv-chips .chip").forEach(b => {
+        b.classList.toggle("active", b.dataset.inv === first);
+      });
+    }
+
+    // "Wait for collection cycles" is wrong when the module that would fill the
+    // tab is unsupported on this platform: waiting never helps. Say which it is.
+    function emptyInventoryReason() {
+      const mods = (last && last.modules) || [];
+      const owner = invTab === "containers" ? "container" : "discovery";
+      const mod = mods.find(m => m.id === owner);
+      if (mod && mod.state === "unsupported") {
+        return `No ${invTab} on this host: the ${owner} module is unsupported here` +
+          (mod.message ? ` (${mod.message})` : "") + ".";
+      }
+      if (mod && !mod.enabled) {
+        return `No ${invTab}: the ${owner} module is disabled in this agent's configuration.`;
+      }
+      return `No ${invTab} observed yet. Wait for discovery/process collection cycles.`;
+    }
+
     function renderInventory() {
       if (!$("inv-table")) return;
       const inv = (last && last.inventory) || {};
+      // Show each category's size on its chip, so an empty tab is visible
+      // without clicking into it.
+      document.querySelectorAll("#inv-chips .chip").forEach(b => {
+        const n = (inv[b.dataset.inv] || []).length;
+        const base = b.dataset.label || (b.dataset.label = b.textContent.trim());
+        b.textContent = n ? `${base} ${n}` : base;
+        b.style.opacity = n ? "" : ".55";
+      });
       const list = inv[invTab] || [];
       const counts = inv.entity_counts || {};
       $("inv-count").textContent = list.length
         ? `${list.length} ${invTab}` + (Object.keys(counts).length ? ` · discovery: ${Object.entries(counts).map(([k,v]) => k+"="+v).join(", ")}` : "")
-        : `No ${invTab} observed yet. Wait for discovery/process collection cycles.`;
+        : emptyInventoryReason();
       const showCPU = invTab === "processes";
       $("inv-table").innerHTML = list.length
         ? list.map(it => `<tr>
@@ -643,6 +681,7 @@
           const h = last.host || {};
           $("inv-host-name").textContent = displayName;
           $("inv-host-id").textContent = h.instance_id || "";
+          selectFirstPopulatedInvTab();
           showView("inventory");
           renderInventory();
         });
