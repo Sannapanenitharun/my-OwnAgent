@@ -729,12 +729,12 @@ function renderInvTable(list) {
   }
 
   if (invTab === "containers") {
-    // Deliberately the `docker ps` column set, in `docker ps` order. An
-    // operator reading this page has almost certainly just read that output on
-    // the box, and a view that reorders or renames the same seven facts makes
-    // them re-learn something they already know.
-    head.innerHTML = "<tr><th>Container ID</th><th>Image</th><th>Command</th>" +
-      "<th>Created</th><th>Status</th><th>Ports</th><th>Names</th></tr>";
+    // The `docker ps` column set, with one deliberate departure: the name sits
+    // beside the ID rather than last. `docker ps` puts NAMES at the far right
+    // because a terminal is only as wide as it is; in a table the two
+    // identifiers belong together, and the name is what an operator scans for.
+    head.innerHTML = "<tr><th>Container ID</th><th>Name</th><th>Image</th><th>Command</th>" +
+      "<th>Created</th><th>Status</th><th>Ports</th></tr>";
     body.innerHTML = list.map(function (it) {
       // Status is the live one ("Up 28 hours"); state ("running", "exited") is
       // the fallback for an agent that reported only the coarse value.
@@ -743,12 +743,12 @@ function renderInvTable(list) {
         ? '<span class="pill ' + (/^up|^running/i.test(status) ? "ok" : "warn") + '">' + esc(status) + "</span>"
         : "-";
       return '<tr><td class="mono" style="color:var(--muted)">' + esc(shortID(it.id)) + "</td>" +
+        '<td class="mono">' + esc(it.name) + "</td>" +
         '<td class="mono">' + esc(it.image || "-") + "</td>" +
         '<td class="mono" title="' + esc(it.command) + '">' + esc(clip(it.command, 24)) + "</td>" +
-        '<td class="mono" style="color:var(--muted)">' + esc(ago(it.created)) + "</td>" +
+        '<td class="mono" style="color:var(--muted); white-space:nowrap">' + esc(ago(it.created)) + "</td>" +
         "<td>" + statusCell + "</td>" +
-        '<td class="mono">' + esc(it.ports || "-") + "</td>" +
-        '<td class="mono">' + esc(it.name) + "</td></tr>";
+        '<td class="mono">' + esc(it.ports || "-") + "</td></tr>";
     }).join("");
     return;
   }
