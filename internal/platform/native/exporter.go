@@ -62,6 +62,13 @@ type Exporter struct {
 	droppedTraces int64
 	droppedExport int64
 
+	// inventory is the retained entity set. It is folded from the event
+	// buffer rather than read out of it, because an inventory is a set and
+	// that buffer is a fixed-size ring; see inventory.go.
+	inventory        map[string]*entityRecord
+	invSeq           int64
+	droppedInventory int64
+
 	failures  int
 	openUntil time.Time
 
@@ -264,7 +271,7 @@ func (e *Exporter) exportInventory(ctx context.Context, now time.Time) {
 	if !ok {
 		return
 	}
-	body := encodeInventory(e.cfg.Resource, s.EventSnapshot(), now)
+	body := encodeInventory(e.cfg.Resource, e.foldInventory(s.EventSnapshot()), now)
 	if len(body) == 0 {
 		return
 	}
@@ -544,6 +551,15 @@ func (e *Exporter) Dropped() (logs, traces, export int64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.droppedLogs, e.droppedTraces, e.droppedExport
+}
+
+// InventorySize reports how many entities the exporter is carrying, and how
+// many it refused past its cap. A silently truncated inventory looks exactly
+// like a smaller host, so the number has to be observable.
+func (e *Exporter) InventorySize() (held int, dropped int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.inventory), e.droppedInventory
 }
 
 var (

@@ -329,8 +329,9 @@ func TestUnreadableCreatedTimeIsAbsentNotEpochZero(t *testing.T) {
 }
 
 func TestNonContainerKindsCarryNoContainerFields(t *testing.T) {
-	// A service has a "state" too. It must not leak into the container fields,
-	// which exist only to fill the container table's columns.
+	// State is shared: a service has a run state just as a container does. The
+	// container-only fields must stay empty, so the services table cannot grow
+	// a column of dashes fed by something that never applies to it.
 	s := New(Limits{})
 	body := entityBody("h", "discovery.entity.discovered",
 		`"entity.kind":"service","name":"sshd","state":"running"`)
@@ -339,9 +340,12 @@ func TestNonContainerKindsCarryNoContainerFields(t *testing.T) {
 	}
 	d, _ := s.Host("h")
 	svc := d.Inventory.Services[0]
-	if svc.State != "" || svc.Image != "" || svc.Status != "" {
-		t.Errorf("service carries container fields: state=%q image=%q status=%q",
-			svc.State, svc.Image, svc.Status)
+	if svc.State != "running" {
+		t.Errorf("state = %q, want the service's own run state", svc.State)
+	}
+	if svc.Image != "" || svc.Status != "" || svc.Ports != "" || svc.Command != "" {
+		t.Errorf("service carries container fields: image=%q status=%q ports=%q command=%q",
+			svc.Image, svc.Status, svc.Ports, svc.Command)
 	}
 	if svc.Detail != "state=running" {
 		t.Errorf("detail = %q, want the service's own summary", svc.Detail)

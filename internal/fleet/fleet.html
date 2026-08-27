@@ -166,6 +166,7 @@
           <button type="button" class="chip" data-inv="services">Services</button>
           <button type="button" class="chip" data-inv="processes">Applications</button>
           <button type="button" class="chip" data-inv="endpoints">Endpoints</button>
+          <button type="button" class="chip" data-inv="filesystems">Filesystems</button>
           <button type="button" class="chip" data-inv="other">Other</button>
         </div>
         <p class="hint" id="inv-count"></p>
@@ -671,7 +672,7 @@ function openInventory() {
 // applications sit populated one click away. Open on a tab that has data.
 function selectFirstPopulatedInvTab() {
   var inv = (detail && detail.inventory) || {};
-  var order = ["containers", "services", "processes", "endpoints", "other"];
+  var order = ["containers", "services", "processes", "endpoints", "filesystems", "other"];
   for (var i = 0; i < order.length; i++) {
     if ((inv[order[i]] || []).length > 0) { invTab = order[i]; break; }
   }
@@ -681,8 +682,15 @@ function selectFirstPopulatedInvTab() {
 // is unsupported on this host: waiting never helps. The intake cannot see
 // module state directly, but an agent that ships no entity events at all has
 // nothing discovering, which is the distinction worth drawing.
+// The chip says "Applications" but the group is called "processes" on the
+// wire, and a sentence reading "0 processes on teleport" under a tab labelled
+// Applications is its own small confusion.
+function invLabel(tab) {
+  return tab === "processes" ? "applications" : tab;
+}
+
 function emptyInvReason() {
-  var label = invTab === "processes" ? "applications" : invTab;
+  var label = invLabel(invTab);
   if (!detail || !detail.batches_inventory) {
     return "No " + label + " received from this host. Its agent has not shipped any " +
       "discovery entities yet — either the discovery module is still on its first " +
@@ -709,7 +717,7 @@ function renderInventory() {
 
   var list = inv[invTab] || [];
   document.getElementById("inv-count").textContent = list.length
-    ? list.length + " " + (invTab === "processes" ? "applications" : invTab) +
+    ? list.length + " " + invLabel(invTab) +
       " on " + (detail ? (detail.name || detail.host) : "")
     : emptyInvReason();
 
@@ -754,12 +762,73 @@ function renderInvTable(list) {
   }
 
   if (invTab === "processes") {
-    head.innerHTML = "<tr><th>Application</th><th>Instances</th><th>CPU</th><th>Memory (RSS)</th></tr>";
+    head.innerHTML = "<tr><th>Application</th><th>Instances</th><th>CPU</th><th>Memory (RSS)</th><th>PID</th></tr>";
     body.innerHTML = list.map(function (it) {
       return '<tr><td class="mono">' + esc(it.name) + "</td>" +
         '<td class="mono">' + (it.count ? num(it.count) : "-") + "</td>" +
         '<td class="mono">' + (it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "-") + "</td>" +
-        '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td></tr>";
+        '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td>" +
+        '<td class="mono" style="color:var(--muted)">' + esc(it.pid || "-") + "</td></tr>";
+    }).join("");
+    return;
+  }
+
+  if (invTab === "services") {
+    // Enabled has three states, not two. A manager that does not report it
+    // must not be rendered as "no": an operator chasing a service that failed
+    // to come up after a reboot is asking exactly that question.
+    head.innerHTML = "<tr><th>Service</th><th>Description</th><th>State</th>" +
+      "<th>At boot</th><th>Manager</th><th>PID</th></tr>";
+    body.innerHTML = list.map(function (it) {
+      var st = it.state || "";
+      var stCell = st
+        ? '<span class="pill ' + serviceTone(st) + '">' + esc(st) + "</span>"
+        : "-";
+      var boot = it.enabled === "true" ? '<span class="pill ok">enabled</span>'
+        : it.enabled === "false" ? '<span class="pill">disabled</span>'
+        : '<span style="color:var(--muted)">not reported</span>';
+      return '<tr><td class="mono">' + esc(it.name) + "</td>" +
+        "<td>" + esc(it.display_name || "-") + "</td>" +
+        "<td>" + stCell + "</td>" +
+        "<td>" + boot + "</td>" +
+        '<td class="mono">' + esc(it.manager || "-") + "</td>" +
+        '<td class="mono" style="color:var(--muted)">' + esc(it.pid || "-") + "</td></tr>";
+    }).join("");
+    return;
+  }
+
+  if (invTab === "endpoints") {
+    head.innerHTML = "<tr><th>Protocol</th><th>Address</th><th>Port</th><th>Owner PID</th></tr>";
+    body.innerHTML = list.map(function (it) {
+      return '<tr><td class="mono">' + esc(it.protocol || "-") + "</td>" +
+        '<td class="mono">' + esc(it.address || it.name) + "</td>" +
+        '<td class="mono">' + esc(it.port || "-") + "</td>" +
+        '<td class="mono" style="color:var(--muted)">' + esc(it.pid || "-") + "</td></tr>";
+    }).join("");
+    return;
+  }
+
+  if (invTab === "filesystems") {
+    // `df -h`, with the bar because "94%" and "94% of 8GB" are different
+    // levels of alarm.
+    head.innerHTML = "<tr><th>Mounted on</th><th>Device</th><th>Type</th>" +
+      "<th>Size</th><th>Used</th><th>Use%</th><th>Flags</th></tr>";
+    body.innerHTML = list.map(function (it) {
+      var flags = [];
+      if (it.read_only) flags.push("ro");
+      if (it.remote) flags.push("remote");
+      var pct = it.used_percent || 0;
+      var usage = it.total_bytes
+        ? '<div class="bar' + (pct >= 85 ? " hot" : "") + '" style="width:70px;display:inline-block;vertical-align:middle">' +
+          '<i style="width:' + Math.min(100, pct).toFixed(0) + '%"></i></div> ' + pct.toFixed(0) + "%"
+        : '<span style="color:var(--muted)">not measured</span>';
+      return '<tr><td class="mono">' + esc(it.mountpoint || it.name) + "</td>" +
+        '<td class="mono">' + esc(it.device || "-") + "</td>" +
+        '<td class="mono">' + esc(it.fstype || "-") + "</td>" +
+        '<td class="mono">' + (it.total_bytes ? bytes(it.total_bytes) : "-") + "</td>" +
+        '<td class="mono">' + (it.used_bytes ? bytes(it.used_bytes) : "-") + "</td>" +
+        '<td class="mono" style="white-space:nowrap">' + usage + "</td>" +
+        '<td class="mono">' + esc(flags.join(" ") || "-") + "</td></tr>";
     }).join("");
     return;
   }
@@ -769,6 +838,14 @@ function renderInvTable(list) {
     return '<tr><td class="mono">' + esc(it.name) + "</td><td>" + esc(it.kind || invTab) +
       '</td><td class="mono">' + esc(it.detail || "-") + "</td></tr>";
   }).join("");
+}
+
+// A failed service is the row an operator is looking for, so it must not be
+// the same colour as a stopped one that was never meant to run.
+function serviceTone(state) {
+  if (/^(running|active)/i.test(state)) return "ok";
+  if (/^(failed|error)/i.test(state)) return "bad";
+  return "warn";
 }
 
 // Docker shows the first 12 characters of a container ID, which is the length
@@ -820,7 +897,7 @@ var TITLES = {
   traces: ["Traces", "Spans received by this intake"],
   modules: ["Modules", "Agent module state, from shipped telemetry"],
   overview: ["Overview", "Fleet totals and what this intake retains"],
-  inventory: ["Host inventory", "Containers, services, and applications on this host"]
+  inventory: ["Host inventory", "Containers, services, applications, endpoints and mounts on this host"]
 };
 
 function render() {
