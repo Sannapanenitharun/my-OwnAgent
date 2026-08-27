@@ -331,7 +331,7 @@ function renderHosts() {
     return;
   }
 
-  head.textContent = h.host;
+  head.textContent = h.name || h.host;
   var st = document.getElementById("host-status");
   st.textContent = h.stale ? "STALE" : "ACTIVE";
   st.className = "pill " + (h.stale ? "bad" : "ok");
@@ -365,7 +365,7 @@ function renderHosts() {
       ? '<span class="mono">' + x.load_1m.toFixed(2) + " " + x.load_5m.toFixed(2) + " " + x.load_15m.toFixed(2) + "</span>"
       : "—";
     return '<tr class="host-row' + (x.host === selected ? " sel" : "") + '" data-host="' + esc(x.host) + '">' +
-      '<td><span class="link">' + esc(x.host) + "</span></td>" +
+      '<td><span class="link">' + esc(x.name || x.host) + "</span></td>" +
       '<td><span class="pill ' + (x.stale ? "bad" : "ok") + '">' + (x.stale ? "STALE" : "ACTIVE") + "</span></td>" +
       "<td>" + miniBar(x.cpu_percent) + "</td>" +
       "<td>" + miniBar(x.mem_percent, "mem") + "</td>" +
@@ -398,7 +398,7 @@ function renderHostChips(id) {
   if (!box || !fleet) return;
   box.innerHTML = fleet.hosts.map(function (h) {
     return '<button type="button" class="chip' + (h.host === selected ? " active" : "") +
-      '" data-host="' + esc(h.host) + '">' + esc(h.host) + (h.stale ? " (stale)" : "") + "</button>";
+      '" data-host="' + esc(h.host) + '">' + esc(h.name || h.host) + (h.stale ? " (stale)" : "") + "</button>";
   }).join("");
   Array.prototype.forEach.call(box.querySelectorAll(".chip"), function (b) {
     b.addEventListener("click", function () {
@@ -493,7 +493,7 @@ function renderCharts() {
 
 function renderMetrics() {
   var h = current();
-  document.getElementById("metrics-host-name").textContent = h ? h.host : "Host metrics";
+  document.getElementById("metrics-host-name").textContent = h ? (h.name || h.host) : "Host metrics";
   document.getElementById("metrics-host-id").textContent = h && h.host_id ? h.host_id : "";
   setBar("metrics-cpu-bar", "metrics-cpu-pct", h ? h.cpu_percent : 0);
   setBar("metrics-mem-bar", "metrics-mem-pct", h ? h.mem_percent : 0);
@@ -530,7 +530,7 @@ function renderLogs() {
     return !q || (l.message + " " + (l.source || "")).toLowerCase().indexOf(q) >= 0;
   });
   document.getElementById("logs-hint").textContent =
-    detail.logs.length + " recent lines from " + detail.host + " · " + detail.batches_logs + " batches received";
+    detail.logs.length + " recent lines from " + (detail.name || detail.host) + " · " + detail.batches_logs + " batches received";
   body.innerHTML = rows.length
     ? rows.map(function (l) {
         return "<tr><td>" + esc(new Date(l.time).toLocaleTimeString()) + "</td><td>" +
@@ -545,7 +545,7 @@ function renderTraces() {
   var body = document.getElementById("traces");
   if (!detail) { body.innerHTML = '<tr><td colspan="4" class="empty">Select a host.</td></tr>'; return; }
   document.getElementById("traces-hint").textContent =
-    detail.spans.length + " recent spans from " + detail.host + " · " + detail.batches_traces + " batches received";
+    detail.spans.length + " recent spans from " + (detail.name || detail.host) + " · " + detail.batches_traces + " batches received";
   body.innerHTML = detail.spans.length
     ? detail.spans.map(function (s) {
         return "<tr><td>" + esc(new Date(s.time).toLocaleTimeString()) + "</td><td>" + esc(s.name) +
@@ -572,7 +572,7 @@ function renderModules() {
   });
   var names = Object.keys(mods).sort();
   document.getElementById("modules-hint").textContent = names.length
-    ? names.length + " modules on " + detail.host + ", from the agent's own agent.module.* telemetry."
+    ? names.length + " modules on " + (detail.name || detail.host) + ", from the agent's own agent.module.* telemetry."
     : "";
   body.innerHTML = names.length
     ? names.map(function (n) {
@@ -601,7 +601,7 @@ function renderOverview() {
   }).join("");
   document.getElementById("fleet-table").innerHTML = fleet.hosts.length
     ? fleet.hosts.map(function (h) {
-        return "<tr><td>" + esc(h.host) + '</td><td class="mono">' + esc(h.host_id || "—") +
+        return "<tr><td>" + esc(h.name || h.host) + '</td><td class="mono">' + esc(h.host_id || "—") +
           "</td><td>" + esc([h.platform, h.platform_version].filter(Boolean).join(" ") || h.os || "—") +
           '</td><td class="mono">' + esc(h.agent_version ? "v" + h.agent_version : "—") +
           '</td><td class="mono">' + h.series + '</td><td class="mono">' +
@@ -618,7 +618,7 @@ var invTab = "containers";
 function openInventory() {
   var h = current();
   if (!h) return;
-  document.getElementById("inv-host-name").textContent = h.host;
+  document.getElementById("inv-host-name").textContent = h.name || h.host;
   document.getElementById("inv-host-id").textContent = h.host_id || "";
   selectFirstPopulatedInvTab();
   view = "inventory";
@@ -671,7 +671,7 @@ function renderInventory() {
   var list = inv[invTab] || [];
   document.getElementById("inv-count").textContent = list.length
     ? list.length + " " + (invTab === "processes" ? "applications" : invTab) +
-      " on " + (detail ? detail.host : "")
+      " on " + (detail ? (detail.name || detail.host) : "")
     : emptyInvReason();
 
   var showCPU = invTab === "processes";

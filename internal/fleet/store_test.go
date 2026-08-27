@@ -324,3 +324,40 @@ func TestLoadAverageIsAbsentRatherThanZeroWithoutSeries(t *testing.T) {
 		t.Errorf("iowait=%v, want ~0.2 (from cpu state=iowait)", d.IOWait)
 	}
 }
+
+func TestDisplayNamePrefersTheNameTagButKeyStaysTheID(t *testing.T) {
+	// On EC2 the host key is the instance id, which is stable and unique. The
+	// Name tag is what a person recognises, but two instances can share one, so
+	// it can label a host and never key it.
+	s := New(Limits{})
+	body := []byte(`{"schema":"obsagent.v1","signal":"metrics","host":"i-00aab1097c1a58ac5",
+		"resource":{"host.id":"i-00aab1097c1a58ac5","host.name":"teleport"},
+		"metrics":{"gauges":[{"name":"host.a","value":1}]}}`)
+	if err := s.Ingest("metrics", body); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Fleet().Hosts[0]
+	if got.Host != "i-00aab1097c1a58ac5" {
+		t.Errorf("key = %q, want the instance id", got.Host)
+	}
+	if got.Name != "teleport" {
+		t.Errorf("name = %q, want the Name tag", got.Name)
+	}
+	// Lookup must still work by key, not by label.
+	if _, ok := s.Host("i-00aab1097c1a58ac5"); !ok {
+		t.Error("host not addressable by its key")
+	}
+	if _, ok := s.Host("teleport"); ok {
+		t.Error("host must not be addressable by its label")
+	}
+}
+
+func TestDisplayNameFallsBackToTheKeyWithoutANameTag(t *testing.T) {
+	s := New(Limits{})
+	if err := s.Ingest("metrics", metricsBody("DESKTOP-QIE2SBK", []string{"host.a"}, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Fleet().Hosts[0].Name; got != "DESKTOP-QIE2SBK" {
+		t.Errorf("name = %q, want the key as fallback", got)
+	}
+}

@@ -32,7 +32,11 @@ type Span struct {
 // Summary is one row of the fleet list: enough to judge a host at a glance
 // without shipping its whole series set.
 type Summary struct {
+	// Host is the stable key: the instance id on EC2. Name is what a person
+	// recognises. They are separate because two instances can share a Name tag,
+	// so the name can never be the key.
 	Host      string    `json:"host"`
+	Name      string    `json:"name"`
 	HostID    string    `json:"host_id,omitempty"`
 	Provider  string    `json:"cloud_provider,omitempty"`
 	OS        string    `json:"os,omitempty"`
@@ -172,6 +176,7 @@ func (s *Store) summarise(h *host, now time.Time) Summary {
 	age := now.Sub(h.lastSeen)
 	sum := Summary{
 		Host:         h.name,
+		Name:         displayName(h),
 		HostID:       h.hostID,
 		Provider:     h.resource["cloud.provider"],
 		Agent:        h.resource["service.version"],
@@ -369,4 +374,15 @@ func (r *spanRing) snapshot() []Span {
 		out = append(out, r.buf[idx])
 	}
 	return out
+}
+
+// displayName prefers the EC2 Name tag, which the agent resolves from IMDS
+// instance tags when they are enabled. It falls back to the host key, which is
+// the instance id on EC2 and the hostname elsewhere: an id is a poor label but
+// a correct one, and better than showing nothing.
+func displayName(h *host) string {
+	if n := strings.TrimSpace(h.resource["host.name"]); n != "" {
+		return n
+	}
+	return h.name
 }
