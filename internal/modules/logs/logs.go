@@ -319,6 +319,11 @@ func (m *Module) collect(ctx context.Context, src Source) {
 	m.mu.Unlock()
 }
 
+// srcAttrOf labels a counter with the source a record came from.
+func srcAttrOf(rec Record) platform.Attr {
+	return platform.A(AttrSource, rec.Source.String())
+}
+
 func (m *Module) emit(recs []Record, s Settings, entity string) int {
 	n := 0
 	for _, rec := range recs {
@@ -328,6 +333,12 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 		var stream string
 		if inner, s2, ok := decodeDockerLog(line); ok {
 			line, stream = inner, s2
+		}
+		// Drop excluded lines before any further work: the point of the filter
+		// is that these lines never cost anything downstream.
+		if containsAny(line, s.ExcludeContains) {
+			m.inst.dropped.Add(1, srcAttrOf(rec), platform.A("reason", "excluded"))
+			continue
 		}
 		body, truncated := Truncate(line, s.MaxLineBytes)
 		redacted := Redact(body)

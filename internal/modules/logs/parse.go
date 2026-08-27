@@ -83,3 +83,14 @@ func dockerContainerID(path string) string {
 	}
 	return id
 }
+
+// containsAny reports whether line contains any of the substrings. An empty
+// list matches nothing, so the filter is inert until configured.
+func containsAny(line string, subs []string) bool {
+	for _, s := range subs {
+		if s != "" && strings.Contains(line, s) {
+			return true
+		}
+	}
+	return false
+}

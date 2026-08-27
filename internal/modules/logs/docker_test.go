@@ -58,3 +58,39 @@ func TestDockerContainerIDFromPath(t *testing.T) {
 		}
 	}
 }
+
+func TestContainsAnyIsInertUntilConfigured(t *testing.T) {
+	// An unconfigured filter must never drop anything.
+	if containsAny("any line at all", nil) || containsAny("x", []string{}) {
+		t.Error("the filter matched with no patterns configured")
+	}
+	// An empty pattern must not match everything, which would silence the host.
+	if containsAny("anything", []string{""}) {
+		t.Error("an empty pattern matched; that would drop every line")
+	}
+}
+
+func TestContainsAnyMatchesTheNoisyNeighbour(t *testing.T) {
+	line := `2026-08-27T13:45:08+00:00 ip-172-31-36-199 agent-i[581518]: {"kind":"metric","source":"system.disk.io"}`
+	if !containsAny(line, []string{"agent-i["}) {
+		t.Error("the configured pattern did not match the line it was written for")
+	}
+	// A real message from another process must survive.
+	keep := `2026-08-27T13:45:09+00:00 ip-172-31-36-199 sshd[42]: Accepted publickey for ubuntu`
+	if containsAny(keep, []string{"agent-i["}) {
+		t.Error("an unrelated line was dropped")
+	}
+}
+
+func TestExcludeContainsSettingParses(t *testing.T) {
+	s, err := ParseSettings(mustMC(t, map[string]string{"exclude.contains": "agent-i[, noisy "}))
+	if err != nil {
+		t.Fatalf("ParseSettings: %v", err)
+	}
+	if len(s.ExcludeContains) != 2 || s.ExcludeContains[0] != "agent-i[" {
+		t.Errorf("ExcludeContains = %#v", s.ExcludeContains)
+	}
+	if def, _ := ParseSettings(mustMC(t, nil)); len(def.ExcludeContains) != 0 {
+		t.Errorf("default = %#v, want empty", def.ExcludeContains)
+	}
+}

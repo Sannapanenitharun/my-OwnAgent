@@ -35,6 +35,15 @@ type Settings struct {
 	Paths   []string
 	Exclude []string
 
+	// ExcludeContains drops lines containing any of these substrings, before
+	// they are exported. It exists because a single noisy neighbour can make
+	// every other line on a host unreadable: one agent writing a syslog line
+	// per metric sample per device per cycle buries everything else, and
+	// filtering it in the viewer still pays to collect, ship and store it.
+	//
+	// Dropped lines are counted, never silently discarded.
+	ExcludeContains []string
+
 	MaxLineBytes int
 	MaxBytesPerS int
 	MaxFiles     int
@@ -62,6 +71,7 @@ func (s Settings) Clone() Settings {
 	out := s
 	out.Paths = append([]string(nil), s.Paths...)
 	out.Exclude = append([]string(nil), s.Exclude...)
+	out.ExcludeContains = append([]string(nil), s.ExcludeContains...)
 	out.EventLogs = append([]string(nil), s.EventLogs...)
 	out.DisabledSources = make(map[Source]bool, len(s.DisabledSources))
 	for k, v := range s.DisabledSources {
@@ -83,7 +93,7 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 
 	known := map[string]bool{
 		"interval": true, "collection.timeout": true,
-		"paths": true, "exclude": true,
+		"paths": true, "exclude": true, "exclude.contains": true,
 		"max.line_bytes": true, "max.bytes_per_s": true,
 		"max.files": true, "max.batch": true,
 		"event_logs":    true,
@@ -113,6 +123,9 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 	}
 	if v, ok := mc.Settings["exclude"]; ok {
 		s.Exclude = splitList(v)
+	}
+	if v, ok := mc.Settings["exclude.contains"]; ok {
+		s.ExcludeContains = splitList(v)
 	}
 	if v, ok := mc.Settings["event_logs"]; ok {
 		s.EventLogs = splitList(v)
