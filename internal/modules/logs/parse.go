@@ -2,6 +2,7 @@ package logs
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 )
 
@@ -33,4 +34,52 @@ func extractJournalMessages(buf []byte, max int) []Record {
 		buf = rest[end+1:]
 	}
 	return out
+}
+
+// Docker's json-file driver wraps every container line in an envelope:
+//
+//	{"log":"the actual line\n","stream":"stdout","time":"2026-08-02T09:50:46Z"}
+//
+// Shipping that verbatim buries the message inside JSON and makes a container's
+// logs unreadable in any viewer. Decoding is by content, not configuration: a
+// line either is such an envelope or it is not.
+//
+// stream is carried as an attribute rather than mapped to a severity. Plenty of
+// programs write ordinary progress output to stderr, so treating stderr as an
+// error would manufacture alarm the log itself never expressed.
+func decodeDockerLog(line string) (body, stream string, ok bool) {
+	if len(line) == 0 || line[0] != '{' || !strings.Contains(line, `"log"`) {
+		return "", "", false
+	}
+	var env struct {
+		Log    string `json:"log"`
+		Stream string `json:"stream"`
+	}
+	if err := json.Unmarshal([]byte(line), &env); err != nil {
+		return "", "", false
+	}
+	if env.Log == "" && env.Stream == "" {
+		return "", "", false
+	}
+	return strings.TrimRight(env.Log, "\r\n"), env.Stream, true
+}
+
+// dockerContainerID recovers the container ID from a json-file path, which
+// Docker names /var/lib/docker/containers/<id>/<id>-json.log. Without it a
+// container's lines are attributed only to a path no operator recognises.
+func dockerContainerID(path string) string {
+	if !strings.HasSuffix(path, "-json.log") {
+		return ""
+	}
+	base := path[strings.LastIndexAny(path, `/\`)+1:]
+	id := strings.TrimSuffix(base, "-json.log")
+	if len(id) < 12 {
+		return ""
+	}
+	for _, r := range id {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return ""
+		}
+	}
+	return id
 }

@@ -208,10 +208,13 @@ func (s *Store) Ingest(signal string, body []byte) error {
 				}
 			}
 			h.logs.push(LogLine{
-				Time:    lt,
-				Status:  rec.Status,
-				Source:  rec.Source,
-				Message: rec.Message,
+				Time:      lt,
+				Status:    rec.Status,
+				Source:    rec.Source,
+				Message:   rec.Message,
+				File:      rec.Attributes["file"],
+				Container: rec.Attributes["container_id"],
+				Stream:    rec.Attributes["stream"],
 			})
 		}
 	case "traces":

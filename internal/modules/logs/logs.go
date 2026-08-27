@@ -322,7 +322,14 @@ func (m *Module) collect(ctx context.Context, src Source) {
 func (m *Module) emit(recs []Record, s Settings, entity string) int {
 	n := 0
 	for _, rec := range recs {
-		body, truncated := Truncate(rec.Body, s.MaxLineBytes)
+		// Unwrap Docker json-file envelopes before truncation, so the limit
+		// applies to the message an operator reads, not to the JSON around it.
+		line := rec.Body
+		var stream string
+		if inner, s2, ok := decodeDockerLog(line); ok {
+			line, stream = inner, s2
+		}
+		body, truncated := Truncate(line, s.MaxLineBytes)
 		redacted := Redact(body)
 		srcAttr := platform.A(AttrSource, rec.Source.String())
 		if truncated {
@@ -334,6 +341,12 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 		attrs := []platform.Attr{srcAttr}
 		if rec.File != "" {
 			attrs = append(attrs, platform.A("file", rec.File))
+		}
+		if id := dockerContainerID(rec.File); id != "" {
+			attrs = append(attrs, platform.A("container_id", id))
+		}
+		if stream != "" {
+			attrs = append(attrs, platform.A("stream", stream))
 		}
 		if rec.Channel != "" {
 			attrs = append(attrs, platform.A("channel", rec.Channel))

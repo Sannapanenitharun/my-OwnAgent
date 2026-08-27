@@ -219,7 +219,7 @@
         <p class="hint" id="logs-hint">Recent log lines received from this host.</p>
         <div class="filter"><input id="logs-filter" placeholder="Filter logs…" /></div>
         <div class="panel"><table>
-          <thead><tr><th>Time</th><th>Severity</th><th>Source</th><th>Body</th></tr></thead>
+          <thead><tr><th>Time</th><th>Stream</th><th>Origin</th><th>Body</th></tr></thead>
           <tbody id="logs"></tbody>
         </table></div>
       </section>
@@ -522,23 +522,59 @@ function renderMetrics() {
     : '<tr><td colspan="3" class="empty">No series match.</td></tr>';
 }
 
+// A container's lines carry its ID, never its name: the logs module reads
+// files and has no way to ask the runtime what a container is called. The page
+// already holds the inventory, so it resolves the name here.
+function originOf(l) {
+  if (l.container_id) {
+    var inv = (detail && detail.inventory && detail.inventory.containers) || [];
+    for (var i = 0; i < inv.length; i++) {
+      var id = (inv[i].detail || "").match(/id=([0-9a-f]+)/);
+      if (id && l.container_id.indexOf(id[1]) === 0) {
+        return { label: inv[i].name, kind: "container" };
+      }
+    }
+    return { label: l.container_id.slice(0, 12), kind: "container" };
+  }
+  if (l.file) {
+    var i = l.file.lastIndexOf("/");
+    return { label: i >= 0 ? l.file.slice(i + 1) : l.file, kind: "file", title: l.file };
+  }
+  return { label: l.source || "-", kind: l.source || "" };
+}
+
 function renderLogs() {
   var body = document.getElementById("logs");
   if (!detail) { body.innerHTML = '<tr><td colspan="4" class="empty">Select a host.</td></tr>'; return; }
   var q = logFilter.toLowerCase();
   var rows = detail.logs.filter(function (l) {
-    return !q || (l.message + " " + (l.source || "")).toLowerCase().indexOf(q) >= 0;
+    if (!q) return true;
+    var o = originOf(l);
+    return (l.message + " " + o.label + " " + (l.file || "")).toLowerCase().indexOf(q) >= 0;
+  });
+
+  var containers = 0, files = {};
+  detail.logs.forEach(function (l) {
+    if (l.container_id) containers++;
+    else if (l.file) files[l.file] = true;
   });
   document.getElementById("logs-hint").textContent =
-    detail.logs.length + " recent lines from " + (detail.name || detail.host) + " · " + detail.batches_logs + " batches received";
+    detail.logs.length + " recent lines from " + (detail.name || detail.host) +
+    " · " + Object.keys(files).length + " files, " + containers + " container lines" +
+    " · " + detail.batches_logs + " batches received";
+
   body.innerHTML = rows.length
     ? rows.map(function (l) {
-        return "<tr><td>" + esc(new Date(l.time).toLocaleTimeString()) + "</td><td>" +
-          esc(l.status || "—") + "</td><td>" + esc(l.source || "—") +
-          '</td><td class="mono">' + esc(l.message) + "</td></tr>";
+        var o = originOf(l);
+        var cls = o.kind === "container" ? "blue" : "";
+        return "<tr><td>" + esc(new Date(l.time).toLocaleTimeString()) + "</td>" +
+          "<td>" + (l.stream ? esc(l.stream) : esc(l.status || "-")) + "</td>" +
+          '<td><span class="pill ' + cls + '" title="' + esc(o.title || o.label) + '">' +
+          esc(o.label) + "</span></td>" +
+          '<td class="mono">' + esc(l.message) + "</td></tr>";
       }).join("")
-    : '<tr><td colspan="4" class="empty">No log lines received from this host. The agent ships logs ' +
-      "only if its logs module is enabled and has readable sources.</td></tr>";
+    : '<tr><td colspan="4" class="empty">No log lines match. The agent ships logs ' +
+      "only from paths its logs module is configured to read, plus journald.</td></tr>";
 }
 
 function renderTraces() {

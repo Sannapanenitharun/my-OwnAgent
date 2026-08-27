@@ -18,6 +18,12 @@ type LogLine struct {
 	Status  string    `json:"status,omitempty"`
 	Source  string    `json:"source,omitempty"`
 	Message string    `json:"message"`
+
+	// Origin. A fleet-wide log view is unreadable without it: "all the logs
+	// on the server" is many files and many containers interleaved.
+	File      string `json:"file,omitempty"`
+	Container string `json:"container_id,omitempty"`
+	Stream    string `json:"stream,omitempty"`
 }
 
 // Span is one recent span, reduced to what a list can usefully show.
