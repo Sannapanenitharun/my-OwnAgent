@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -181,5 +182,76 @@ func TestAgentWithoutInventoryExportStillReportsApplications(t *testing.T) {
 	}
 	if len(d.Inventory.Services) != 0 {
 		t.Error("services must be empty without entity events")
+	}
+}
+
+func TestEnrichedContainerShowsNameImageAndPorts(t *testing.T) {
+	s := New(Limits{})
+	body := entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"container","name":"grafana","image":"grafana/grafana:12.4.0",`+
+			`"state":"running","status":"Up 3 days","ports":"3000->3000/tcp",`+
+			`"runtime":"docker","container_id":"197a675287225cafa1e9515ce3aa523f2fe04710a3aef8c72b4b7e6c80359381"`)
+	if err := s.Ingest("inventory", body); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := s.Host("h")
+	if len(d.Inventory.Containers) != 1 {
+		t.Fatalf("containers = %d", len(d.Inventory.Containers))
+	}
+	c := d.Inventory.Containers[0]
+	// The name must be the container's name, not its 64-character ID.
+	if c.Name != "grafana" {
+		t.Errorf("name = %q, want grafana", c.Name)
+	}
+	for _, want := range []string{"grafana/grafana:12.4.0", "Up 3 days", "3000->3000/tcp"} {
+		if !strings.Contains(c.Detail, want) {
+			t.Errorf("detail %q is missing %q", c.Detail, want)
+		}
+	}
+}
+
+func TestUnenrichedContainerStillIdentifiesItself(t *testing.T) {
+	// Without docker.socket configured there is no name or image, so the row
+	// must fall back to runtime and a short ID rather than rendering blank.
+	s := New(Limits{})
+	body := entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"container","runtime":"docker",`+
+			`"container_id":"197a675287225cafa1e9515ce3aa523f2fe04710a3aef8c72b4b7e6c80359381"`)
+	if err := s.Ingest("inventory", body); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := s.Host("h")
+	c := d.Inventory.Containers[0]
+	if c.Detail != "runtime=docker id=197a67528722" {
+		t.Errorf("detail = %q, want the runtime and truncated id fallback", c.Detail)
+	}
+}
+
+func TestEnrichingAContainerRenamesItRatherThanDuplicatingIt(t *testing.T) {
+	// Turning on docker.socket changes a container's name from its 64-char ID
+	// to its real name. That is the same container, so the inventory must show
+	// one row, not two. Keying on the name produced 42 rows for 21 containers.
+	s := New(Limits{})
+	id := "197a675287225cafa1e9515ce3aa523f2fe04710a3aef8c72b4b7e6c80359381"
+
+	unenriched := entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"container","name":"`+id+`","runtime":"docker","container_id":"`+id+`"`)
+	if err := s.Ingest("inventory", unenriched); err != nil {
+		t.Fatal(err)
+	}
+	enriched := entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"container","name":"grafana","image":"grafana/grafana:12.4.0",`+
+			`"status":"Up 3 days","runtime":"docker","container_id":"`+id+`"`)
+	if err := s.Ingest("inventory", enriched); err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := s.Host("h")
+	if len(d.Inventory.Containers) != 1 {
+		t.Fatalf("containers = %d, want 1: enrichment renames, it does not duplicate",
+			len(d.Inventory.Containers))
+	}
+	if got := d.Inventory.Containers[0].Name; got != "grafana" {
+		t.Errorf("name = %q, want the enriched name to win", got)
 	}
 }

@@ -317,6 +317,16 @@ type ContainerFacts struct {
 	PodUID    string
 	PodName   string
 	Namespace string
+
+	// Runtime detail, filled in only when the runtime API is reachable and the
+	// operator has opted into reading it. A cgroup path carries an ID and
+	// nothing else, so these stay empty on an unenriched host.
+	Name        string
+	Image       string
+	State       string
+	Status      string
+	Ports       string
+	CreatedUnix int64
 }
 
 // InterfaceFacts is one network interface.

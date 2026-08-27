@@ -170,7 +170,7 @@
         </div>
         <p class="hint" id="inv-count"></p>
         <div class="panel"><table>
-          <thead><tr><th>Name</th><th>Kind</th><th>Detail</th><th>CPU</th><th>Memory (RSS)</th><th>Count</th></tr></thead>
+          <thead id="inv-head"></thead>
           <tbody id="inv-table"></tbody>
         </table></div>
       </section>
@@ -674,16 +674,71 @@ function renderInventory() {
       " on " + (detail ? (detail.name || detail.host) : "")
     : emptyInvReason();
 
-  var showCPU = invTab === "processes";
-  document.getElementById("inv-table").innerHTML = list.length
-    ? list.map(function (it) {
-        return '<tr><td class="mono">' + esc(it.name) + "</td><td>" + esc(it.kind || invTab) +
-          '</td><td class="mono">' + esc(it.detail || "") + "</td><td>" +
-          (showCPU && it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "—") + "</td><td>" +
-          (showCPU && it.memory ? bytes(it.memory) : "—") + "</td><td>" +
-          (it.count ? num(it.count) : "—") + "</td></tr>";
-      }).join("")
-    : '<tr><td colspan="6" class="empty">Nothing in this category</td></tr>';
+  renderInvTable(list);
+}
+
+// Containers carry image, state and published ports; applications carry CPU,
+// memory and an instance count. Rendering both through one column set left
+// half of every row as a dash, so each kind now gets the columns it has.
+function renderInvTable(list) {
+  var head = document.getElementById("inv-head");
+  var body = document.getElementById("inv-table");
+  if (!list.length) {
+    head.innerHTML = "<tr><th>Name</th><th>Detail</th></tr>";
+    body.innerHTML = '<tr><td colspan="2" class="empty">Nothing in this category</td></tr>';
+    return;
+  }
+
+  if (invTab === "containers") {
+    head.innerHTML = "<tr><th>Container</th><th>Image</th><th>State</th><th>Published ports</th><th>ID</th></tr>";
+    body.innerHTML = list.map(function (it) {
+      var p = splitContainerDetail(it.detail);
+      var state = p.state
+        ? '<span class="pill ' + (/^up/i.test(p.state) ? "ok" : "warn") + '">' + esc(p.state) + "</span>"
+        : "-";
+      return '<tr><td class="mono">' + esc(it.name) + "</td>" +
+        '<td class="mono">' + esc(p.image || "-") + "</td>" +
+        "<td>" + state + "</td>" +
+        '<td class="mono">' + esc(p.ports || "-") + "</td>" +
+        '<td class="mono" style="color:var(--muted)">' + esc(p.id || "-") + "</td></tr>";
+    }).join("");
+    return;
+  }
+
+  if (invTab === "processes") {
+    head.innerHTML = "<tr><th>Application</th><th>Instances</th><th>CPU</th><th>Memory (RSS)</th></tr>";
+    body.innerHTML = list.map(function (it) {
+      return '<tr><td class="mono">' + esc(it.name) + "</td>" +
+        '<td class="mono">' + (it.count ? num(it.count) : "-") + "</td>" +
+        '<td class="mono">' + (it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "-") + "</td>" +
+        '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td></tr>";
+    }).join("");
+    return;
+  }
+
+  head.innerHTML = "<tr><th>Name</th><th>Kind</th><th>Detail</th></tr>";
+  body.innerHTML = list.map(function (it) {
+    return '<tr><td class="mono">' + esc(it.name) + "</td><td>" + esc(it.kind || invTab) +
+      '</td><td class="mono">' + esc(it.detail || "-") + "</td></tr>";
+  }).join("");
+}
+
+// The intake ships a container's detail as one line. Split it back apart so
+// each piece gets its own column. An unenriched host has no image or ports,
+// only "runtime=docker id=<short>".
+function splitContainerDetail(detail) {
+  var out = {};
+  if (!detail) return out;
+  if (detail.indexOf("runtime=") === 0) {
+    var m = detail.match(/id=([0-9a-f]+)/);
+    if (m) out.id = m[1];
+    return out;
+  }
+  var parts = detail.split(" | ");
+  out.image = parts[0] || "";
+  out.state = parts[1] || "";
+  out.ports = parts[2] || "";
+  return out;
 }
 
 Array.prototype.forEach.call(document.querySelectorAll("#inv-chips .chip"), function (btn) {

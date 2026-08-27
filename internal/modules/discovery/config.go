@@ -110,6 +110,16 @@ type Settings struct {
 
 	ProcessMode ProcessMode
 
+	// DockerSocket, when set, enables container enrichment: names, images,
+	// state and published ports read from the Docker Engine API.
+	//
+	// Empty by default and deliberately so. The socket that answers
+	// GET /containers/json also accepts requests that start a privileged
+	// container, so reading it is root-equivalent on the host. That authority
+	// is the operator's to grant, never the agent's to assume because the
+	// socket happened to exist.
+	DockerSocket string
+
 	CorrelateEndpoints  bool
 	MaxFDScans          int
 	IncludeLoopback     bool
@@ -267,6 +277,7 @@ var settingKeys = func() map[string]bool {
 		"events.enabled":             true,
 		"metrics.disabled":           true,
 		"health.unresolved_ratio":    true,
+		"docker.socket":              true,
 	}
 	for _, d := range AllDomains {
 		keys["discover."+d.String()] = true
@@ -420,6 +431,8 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 				s.EventsEnabled = b
 			}
 
+		case key == "docker.socket":
+			s.DockerSocket = strings.TrimSpace(raw)
 		case key == "include.services":
 			s.IncludeServices = splitList(raw)
 		case key == "exclude.services":

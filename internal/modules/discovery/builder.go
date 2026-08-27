@@ -237,6 +237,17 @@ func (b *builder) addContainers(containers []ContainerFacts) {
 			platform.A(AttrContainerID, id),
 			platform.A(AttrRuntimeName, c.Runtime.String()),
 		}
+		// Runtime detail, present only when container enrichment is enabled.
+		// "name" is what the inventory view labels the container with; without
+		// it the only available label is the 64-character ID.
+		attrs = appendIf(attrs, AttrName, b.cleanOptional(c.Name, maxNameLen))
+		attrs = appendIf(attrs, AttrContainerImg, b.cleanOptional(c.Image, maxNameLen))
+		attrs = appendIf(attrs, AttrState, b.cleanOptional(c.State, maxNameLen))
+		attrs = appendIf(attrs, AttrStatus, b.cleanOptional(c.Status, maxNameLen))
+		attrs = appendIf(attrs, AttrPorts, b.cleanOptional(c.Ports, maxNameLen))
+		if c.CreatedUnix > 0 {
+			attrs = append(attrs, platform.A(AttrCreated, strconv.FormatInt(c.CreatedUnix, 10)))
+		}
 		attrs = appendIf(attrs, AttrPodUID, b.cleanOptional(c.PodUID, maxNameLen))
 		attrs = appendIf(attrs, AttrNamespace, b.cleanOptional(c.Namespace, maxNameLen))
 		attrs = appendIf(attrs, AttrPodName, b.cleanOptional(c.PodName, maxNameLen))

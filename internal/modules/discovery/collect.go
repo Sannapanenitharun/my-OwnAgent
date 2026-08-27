@@ -253,6 +253,12 @@ func (m *Module) gather(ctx context.Context, s Settings, st *cycleStats) facts {
 	})
 	run(DomainContainer, func() error {
 		v, err := m.set.Container.DiscoverContainers(ctx, f.procs)
+		// Enrichment is additive and never fatal: a container observed from a
+		// cgroup is a fact about this host whether or not the runtime API can
+		// describe it.
+		if err == nil {
+			v = enrichContainers(ctx, m.docker, v)
+		}
 		f.containers = v
 		return err
 	})

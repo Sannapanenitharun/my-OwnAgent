@@ -55,6 +55,10 @@ type Module struct {
 	host module.Host
 	inst *instruments
 
+	// docker enriches container entities when the operator has opted in. nil
+	// when DockerSocket is unset, which is the default.
+	docker *dockerClient
+
 	// Owned by the discovery goroutine after Start.
 	em            *emitter
 	topo          *topology
@@ -171,6 +175,7 @@ func (m *Module) Start(ctx context.Context, h module.Host) error {
 		return errors.New("discovery: already started")
 	}
 	m.settings = settings
+	m.docker = newDockerFrom(settings)
 	m.host = h
 	m.inst = newInstruments(h.Telemetry)
 	m.em = newEmitter(m.inst, settings)
@@ -681,6 +686,7 @@ func (m *Module) CommitConfig(context.Context) error {
 		return nil
 	}
 	m.settings = *m.staged
+	m.docker = newDockerFrom(m.settings)
 	m.staged = nil
 	ch := m.reconfigure
 	m.mu.Unlock()

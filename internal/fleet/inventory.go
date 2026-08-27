@@ -188,18 +188,38 @@ func entityFromAttrs(attrs map[string]string) (kind, name, detail, key string) {
 
 	switch kind {
 	case "container":
+		// Prefer what the runtime API supplied. Without enrichment the only
+		// name available is the container ID, which is why an unenriched host
+		// lists 64-character hex strings.
 		parts := []string{}
+		if img := attrs["image"]; img != "" {
+			parts = append(parts, img)
+		}
+		if st := attrs["status"]; st != "" {
+			parts = append(parts, st)
+		} else if state != "" {
+			parts = append(parts, state)
+		}
+		if p := attrs["ports"]; p != "" {
+			parts = append(parts, p)
+		}
+		if len(parts) > 0 {
+			detail = strings.Join(parts, " | ")
+			break
+		}
+		// Unenriched: the runtime and a truncated id are all that is known.
+		fallback := []string{}
 		if runtime != "" {
-			parts = append(parts, "runtime="+runtime)
+			fallback = append(fallback, "runtime="+runtime)
 		}
 		if containerID != "" {
 			id := containerID
 			if len(id) > 12 {
 				id = id[:12]
 			}
-			parts = append(parts, "id="+id)
+			fallback = append(fallback, "id="+id)
 		}
-		detail = strings.Join(parts, " ")
+		detail = strings.Join(fallback, " ")
 	case "service":
 		if state != "" {
 			detail = "state=" + state
@@ -217,7 +237,15 @@ func entityFromAttrs(attrs map[string]string) (kind, name, detail, key string) {
 	if kind == "" && name == "" {
 		return "", "", "", ""
 	}
-	key = kind + "|" + name + "|" + containerID
+	// A container is identified by its ID. Its name is a description that can
+	// change -- enabling enrichment renames every container from its ID to its
+	// real name -- and a key containing the name would make that rename look
+	// like 21 new containers rather than 21 updates.
+	if kind == "container" && containerID != "" {
+		key = kind + "|" + containerID
+	} else {
+		key = kind + "|" + name + "|" + containerID
+	}
 	return kind, name, strings.TrimSpace(detail), key
 }
 
