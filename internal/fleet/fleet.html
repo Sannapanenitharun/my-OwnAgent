@@ -529,9 +529,12 @@ function originOf(l) {
   if (l.container_id) {
     var inv = (detail && detail.inventory && detail.inventory.containers) || [];
     for (var i = 0; i < inv.length; i++) {
-      var id = (inv[i].detail || "").match(/id=([0-9a-f]+)/);
-      if (id && l.container_id.indexOf(id[1]) === 0) {
-        return { label: inv[i].name, kind: "container" };
+      // Match on the ID field, not on display text. A cgroup path can carry a
+      // truncated ID, so compare by prefix in whichever direction is shorter.
+      var cid = inv[i].id;
+      if (!cid) continue;
+      if (cid.indexOf(l.container_id) === 0 || l.container_id.indexOf(cid) === 0) {
+        return { label: inv[i].name, kind: "container", title: cid };
       }
     }
     return { label: l.container_id.slice(0, 12), kind: "container" };

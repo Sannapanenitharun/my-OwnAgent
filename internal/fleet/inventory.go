@@ -8,8 +8,13 @@ import (
 
 // InventoryItem is one discovered workload on a host.
 type InventoryItem struct {
-	Kind   string  `json:"kind"`
-	Name   string  `json:"name"`
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	// ID is the container ID, kept as a field rather than embedded in Detail.
+	// Log lines carry a container ID and no name, so the view needs a reliable
+	// join key; recovering one by parsing display text breaks the moment the
+	// text changes.
+	ID     string  `json:"id,omitempty"`
 	Detail string  `json:"detail,omitempty"`
 	CPU    float64 `json:"cpu,omitempty"`
 	Memory float64 `json:"memory,omitempty"`
@@ -33,6 +38,7 @@ type entity struct {
 	kind   string
 	name   string
 	detail string
+	id     string
 	gone   bool
 }
 
@@ -56,7 +62,7 @@ func (s *Store) ingestEventsLocked(h *host, events []eventJSON) {
 				h.dropped++
 				continue
 			}
-			h.entities[key] = &entity{kind: kind, name: name, detail: detail}
+			h.entities[key] = &entity{kind: kind, name: name, detail: detail, id: ev.Attributes["container_id"]}
 		case "discovery.entity.removed":
 			if e, ok := h.entities[key]; ok {
 				e.gone = true
@@ -74,7 +80,7 @@ func (s *Store) inventoryLocked(h *host) Inventory {
 		if e.gone || e.name == "" {
 			continue
 		}
-		item := InventoryItem{Kind: e.kind, Name: e.name, Detail: e.detail}
+		item := InventoryItem{Kind: e.kind, Name: e.name, Detail: e.detail, ID: e.id}
 		switch e.kind {
 		case "container":
 			inv.Containers = append(inv.Containers, item)

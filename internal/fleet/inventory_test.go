@@ -255,3 +255,26 @@ func TestEnrichingAContainerRenamesItRatherThanDuplicatingIt(t *testing.T) {
 		t.Errorf("name = %q, want the enriched name to win", got)
 	}
 }
+
+func TestContainerInventoryCarriesItsIDAsAField(t *testing.T) {
+	// Log lines carry a container ID and no name, so the view joins them to
+	// the inventory on that ID. Recovering it by parsing the detail string
+	// broke as soon as enrichment changed what that string contains.
+	s := New(Limits{})
+	id := "197a675287225cafa1e9515ce3aa523f2fe04710a3aef8c72b4b7e6c80359381"
+	body := entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"container","name":"coroot","image":"ghcr.io/coroot/coroot:latest",`+
+			`"status":"Up 25 hours","runtime":"docker","container_id":"`+id+`"`)
+	if err := s.Ingest("inventory", body); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := s.Host("h")
+	c := d.Inventory.Containers[0]
+	if c.ID != id {
+		t.Errorf("ID = %q, want the full container id", c.ID)
+	}
+	// The detail is display text and must not be the join key.
+	if strings.Contains(c.Detail, "id=") {
+		t.Errorf("detail %q embeds the id; it belongs in the ID field", c.Detail)
+	}
+}
