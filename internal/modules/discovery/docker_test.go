@@ -32,6 +32,7 @@ func dockerStub(t *testing.T, handler http.HandlerFunc) *dockerClient {
 const twoContainers = `[
   {"Id":"197a675287225cafa1e9515ce3aa523f2fe04710a3aef8c72b4b7e6c80359381",
    "Names":["/grafana"],"Image":"grafana/grafana:12.4.0","State":"running",
+   "Command":"/run.sh",
    "Status":"Up 3 days","Created":1756000000,
    "Ports":[{"IP":"0.0.0.0","PrivatePort":3000,"PublicPort":3000,"Type":"tcp"}]},
   {"Id":"48434aebd534f81846b6b70fd144ca31b1a155c0a15121df895cdb2bdc97d944",
@@ -214,5 +215,22 @@ func TestDockerRejectionByVersionIsNotFatal(t *testing.T) {
 	got := enrichContainers(context.Background(), cli, []ContainerFacts{{ID: "abc123def456", Runtime: ContainerRuntimeDocker}})
 	if len(got) != 1 || got[0].ID != "abc123def456" {
 		t.Fatalf("facts lost on a version rejection: %+v", got)
+	}
+}
+
+func TestEnrichCarriesTheContainerCommand(t *testing.T) {
+	// `docker ps` shows a COMMAND column, and the inventory view mirrors that
+	// output. The command is not derivable from a cgroup path.
+	cli := dockerStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(twoContainers))
+	})
+	got := enrichContainers(context.Background(), cli, []ContainerFacts{{ID: "197a67528722"}})
+	if got[0].Command != "/run.sh" {
+		t.Errorf("command = %q, want /run.sh", got[0].Command)
+	}
+	// A daemon that reports no command must leave the field empty, not "-".
+	got2 := enrichContainers(context.Background(), cli, []ContainerFacts{{ID: "48434aebd534"}})
+	if got2[0].Command != "" {
+		t.Errorf("command = %q, want empty when the daemon reports none", got2[0].Command)
 	}
 }

@@ -255,6 +255,7 @@ type ServiceFacts struct {
 	// name. It is the natural key, so it must be the stable machine-readable
 	// one and not the display name.
 	Name        string
+	Command     string
 	DisplayName string
 	Kind        ServiceKind
 	State       ServiceState
@@ -322,6 +323,7 @@ type ContainerFacts struct {
 	// operator has opted into reading it. A cgroup path carries an ID and
 	// nothing else, so these stay empty on an unenriched host.
 	Name        string
+	Command     string
 	Image       string
 	State       string
 	Status      string

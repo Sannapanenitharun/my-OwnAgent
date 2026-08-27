@@ -61,7 +61,7 @@
     .legend { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 6px; font-size: 10px; color: var(--muted); }
     .legend span { display: inline-flex; align-items: center; gap: 5px; }
     .legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; background: #0f1620; }
@@ -729,17 +729,26 @@ function renderInvTable(list) {
   }
 
   if (invTab === "containers") {
-    head.innerHTML = "<tr><th>Container</th><th>Image</th><th>State</th><th>Published ports</th><th>ID</th></tr>";
+    // Deliberately the `docker ps` column set, in `docker ps` order. An
+    // operator reading this page has almost certainly just read that output on
+    // the box, and a view that reorders or renames the same seven facts makes
+    // them re-learn something they already know.
+    head.innerHTML = "<tr><th>Container ID</th><th>Image</th><th>Command</th>" +
+      "<th>Created</th><th>Status</th><th>Ports</th><th>Names</th></tr>";
     body.innerHTML = list.map(function (it) {
-      var p = splitContainerDetail(it.detail);
-      var state = p.state
-        ? '<span class="pill ' + (/^up/i.test(p.state) ? "ok" : "warn") + '">' + esc(p.state) + "</span>"
+      // Status is the live one ("Up 28 hours"); state ("running", "exited") is
+      // the fallback for an agent that reported only the coarse value.
+      var status = it.status || it.state || "";
+      var statusCell = status
+        ? '<span class="pill ' + (/^up|^running/i.test(status) ? "ok" : "warn") + '">' + esc(status) + "</span>"
         : "-";
-      return '<tr><td class="mono">' + esc(it.name) + "</td>" +
-        '<td class="mono">' + esc(p.image || "-") + "</td>" +
-        "<td>" + state + "</td>" +
-        '<td class="mono">' + esc(p.ports || "-") + "</td>" +
-        '<td class="mono" style="color:var(--muted)">' + esc(p.id || "-") + "</td></tr>";
+      return '<tr><td class="mono" style="color:var(--muted)">' + esc(shortID(it.id)) + "</td>" +
+        '<td class="mono">' + esc(it.image || "-") + "</td>" +
+        '<td class="mono" title="' + esc(it.command) + '">' + esc(clip(it.command, 24)) + "</td>" +
+        '<td class="mono" style="color:var(--muted)">' + esc(ago(it.created)) + "</td>" +
+        "<td>" + statusCell + "</td>" +
+        '<td class="mono">' + esc(it.ports || "-") + "</td>" +
+        '<td class="mono">' + esc(it.name) + "</td></tr>";
     }).join("");
     return;
   }
@@ -762,22 +771,34 @@ function renderInvTable(list) {
   }).join("");
 }
 
-// The intake ships a container's detail as one line. Split it back apart so
-// each piece gets its own column. An unenriched host has no image or ports,
-// only "runtime=docker id=<short>".
-function splitContainerDetail(detail) {
-  var out = {};
-  if (!detail) return out;
-  if (detail.indexOf("runtime=") === 0) {
-    var m = detail.match(/id=([0-9a-f]+)/);
-    if (m) out.id = m[1];
-    return out;
+// Docker shows the first 12 characters of a container ID, which is the length
+// its own CLI accepts as an unambiguous reference.
+function shortID(id) {
+  if (!id) return "-";
+  return id.length > 12 ? id.slice(0, 12) : id;
+}
+
+// clip shortens a long command for the column and leaves the whole of it in
+// the cell's title, so nothing is actually hidden.
+function clip(s, n) {
+  if (!s) return "-";
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+// ago renders a creation time the way `docker ps` does. The age is computed
+// against the viewer's clock from a Unix timestamp rather than shipped
+// pre-rendered, so a page left open does not keep claiming "2 minutes ago".
+function ago(unix) {
+  var t = Number(unix) || 0;
+  if (t <= 0) return "-";
+  var s = Math.floor(Date.now() / 1000) - t;
+  if (s < 0) return "just now";
+  var units = [[86400, "day"], [3600, "hour"], [60, "minute"]];
+  for (var i = 0; i < units.length; i++) {
+    var n = Math.floor(s / units[i][0]);
+    if (n >= 1) return n + " " + units[i][1] + (n === 1 ? "" : "s") + " ago";
   }
-  var parts = detail.split(" | ");
-  out.image = parts[0] || "";
-  out.state = parts[1] || "";
-  out.ports = parts[2] || "";
-  return out;
+  return s + " second" + (s === 1 ? "" : "s") + " ago";
 }
 
 Array.prototype.forEach.call(document.querySelectorAll("#inv-chips .chip"), function (btn) {

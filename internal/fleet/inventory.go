@@ -14,8 +14,24 @@ type InventoryItem struct {
 	// Log lines carry a container ID and no name, so the view needs a reliable
 	// join key; recovering one by parsing display text breaks the moment the
 	// text changes.
-	ID     string  `json:"id,omitempty"`
-	Detail string  `json:"detail,omitempty"`
+	ID string `json:"id,omitempty"`
+	// Detail is the one-line summary. It stays for the kinds that have no
+	// columns of their own, and for a client too old to know the fields below.
+	Detail string `json:"detail,omitempty"`
+
+	// Container detail, shipped as separate fields rather than folded into
+	// Detail so the view can lay containers out the way `docker ps` does. Each
+	// is empty on a host without container enrichment, where a cgroup path
+	// yields an ID and nothing else.
+	Image   string `json:"image,omitempty"`
+	Command string `json:"command,omitempty"`
+	State   string `json:"state,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Ports   string `json:"ports,omitempty"`
+	// Created is Unix seconds, so the view can age it against the viewer's own
+	// clock rather than trusting a pre-rendered "3 days ago" from the host.
+	Created int64 `json:"created,omitempty"`
+
 	CPU    float64 `json:"cpu,omitempty"`
 	Memory float64 `json:"memory,omitempty"`
 	Count  float64 `json:"count,omitempty"`
@@ -40,19 +56,23 @@ type entity struct {
 	detail string
 	id     string
 	gone   bool
+
+	// Container detail, when the runtime API supplied it.
+	image, command, state, status, ports string
+	created                              int64
 }
 
 // ingestEvents folds discovery entity events into the host's entity table.
 // The caller holds s.mu.
 func (s *Store) ingestEventsLocked(h *host, events []eventJSON) {
 	for _, ev := range events {
-		kind, name, detail, key := entityFromAttrs(ev.Attributes)
+		ent, key := entityFromAttrs(ev.Attributes)
 		if key == "" {
 			continue
 		}
 		switch ev.Name {
 		case "discovery.entity.discovered", "discovery.entity.changed":
-			if kind == "" || name == "" {
+			if ent.kind == "" || ent.name == "" {
 				continue
 			}
 			// Past the cap, drop rather than grow: a host churning through
@@ -62,7 +82,8 @@ func (s *Store) ingestEventsLocked(h *host, events []eventJSON) {
 				h.dropped++
 				continue
 			}
-			h.entities[key] = &entity{kind: kind, name: name, detail: detail, id: ev.Attributes["container_id"]}
+			e := ent
+			h.entities[key] = &e
 		case "discovery.entity.removed":
 			if e, ok := h.entities[key]; ok {
 				e.gone = true
@@ -80,7 +101,11 @@ func (s *Store) inventoryLocked(h *host) Inventory {
 		if e.gone || e.name == "" {
 			continue
 		}
-		item := InventoryItem{Kind: e.kind, Name: e.name, Detail: e.detail, ID: e.id}
+		item := InventoryItem{
+			Kind: e.kind, Name: e.name, Detail: e.detail, ID: e.id,
+			Image: e.image, Command: e.command, State: e.state,
+			Status: e.status, Ports: e.ports, Created: e.created,
+		}
 		switch e.kind {
 		case "container":
 			inv.Containers = append(inv.Containers, item)
@@ -172,9 +197,10 @@ func trimFloat(v float64) string {
 // entityFromAttrs derives the kind, display name, detail line, and dedup key
 // for one entity event. It mirrors the agent's own inventory view so the same
 // events produce the same rows in both places.
-func entityFromAttrs(attrs map[string]string) (kind, name, detail, key string) {
-	kind = first(attrs, "entity.kind", "kind")
-	name = first(attrs, "name", "display_name")
+func entityFromAttrs(attrs map[string]string) (e entity, key string) {
+	kind := first(attrs, "entity.kind", "kind")
+	name := first(attrs, "name", "display_name")
+	detail := ""
 	containerID := attrs["container_id"]
 	runtime := attrs["runtime"]
 	state := attrs["state"]
@@ -194,6 +220,17 @@ func entityFromAttrs(attrs map[string]string) (kind, name, detail, key string) {
 
 	switch kind {
 	case "container":
+		e.image = attrs["image"]
+		e.command = attrs["command"]
+		e.state = state
+		e.status = attrs["status"]
+		e.ports = attrs["ports"]
+		if c := attrs["created"]; c != "" {
+			// A created time the agent could not read is absent, not zero.
+			if n, err := strconv.ParseInt(c, 10, 64); err == nil {
+				e.created = n
+			}
+		}
 		// Prefer what the runtime API supplied. Without enrichment the only
 		// name available is the container ID, which is why an unenriched host
 		// lists 64-character hex strings.
@@ -241,7 +278,7 @@ func entityFromAttrs(attrs map[string]string) (kind, name, detail, key string) {
 	}
 
 	if kind == "" && name == "" {
-		return "", "", "", ""
+		return entity{}, ""
 	}
 	// A container is identified by its ID. Its name is a description that can
 	// change -- enabling enrichment renames every container from its ID to its
@@ -252,7 +289,8 @@ func entityFromAttrs(attrs map[string]string) (kind, name, detail, key string) {
 	} else {
 		key = kind + "|" + name + "|" + containerID
 	}
-	return kind, name, strings.TrimSpace(detail), key
+	e.kind, e.name, e.detail, e.id = kind, name, strings.TrimSpace(detail), containerID
+	return e, key
 }
 
 func first(attrs map[string]string, keys ...string) string {

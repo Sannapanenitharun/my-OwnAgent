@@ -242,6 +242,7 @@ func (b *builder) addContainers(containers []ContainerFacts) {
 		// it the only available label is the 64-character ID.
 		attrs = appendIf(attrs, AttrName, b.cleanOptional(c.Name, maxNameLen))
 		attrs = appendIf(attrs, AttrContainerImg, b.cleanOptional(c.Image, maxNameLen))
+		attrs = appendIf(attrs, AttrCommand, b.cleanOptional(c.Command, maxNameLen))
 		attrs = appendIf(attrs, AttrState, b.cleanOptional(c.State, maxNameLen))
 		attrs = appendIf(attrs, AttrStatus, b.cleanOptional(c.Status, maxNameLen))
 		attrs = appendIf(attrs, AttrPorts, b.cleanOptional(c.Ports, maxNameLen))

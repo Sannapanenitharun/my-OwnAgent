@@ -278,3 +278,72 @@ func TestContainerInventoryCarriesItsIDAsAField(t *testing.T) {
 		t.Errorf("detail %q embeds the id; it belongs in the ID field", c.Detail)
 	}
 }
+
+func TestContainerFieldsAreStructuredNotJustADetailLine(t *testing.T) {
+	// The view lays containers out the way `docker ps` does, which means it
+	// needs each fact in its own column. Splitting a joined detail string back
+	// apart in the browser is how the ID field got lost the first time.
+	s := New(Limits{})
+	id := "cb6ed1f3ba58b0a1e9515ce3aa523f2fe04710a3aef8c72b4b7e6c80359381ab"
+	body := entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"container","name":"juice-shop","image":"bkimminich/juice-shop",`+
+			`"command":"/nodejs/bin/node /juice-shop/build/app.js","state":"running",`+
+			`"status":"Up 28 hours","ports":"3030->3000/tcp","created":"1756000000",`+
+			`"runtime":"docker","container_id":"`+id+`"`)
+	if err := s.Ingest("inventory", body); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := s.Host("h")
+	c := d.Inventory.Containers[0]
+
+	for _, tc := range []struct{ field, got, want string }{
+		{"image", c.Image, "bkimminich/juice-shop"},
+		{"command", c.Command, "/nodejs/bin/node /juice-shop/build/app.js"},
+		{"state", c.State, "running"},
+		{"status", c.Status, "Up 28 hours"},
+		{"ports", c.Ports, "3030->3000/tcp"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.field, tc.got, tc.want)
+		}
+	}
+	if c.Created != 1756000000 {
+		t.Errorf("created = %d, want the unix seconds the agent reported", c.Created)
+	}
+}
+
+func TestUnreadableCreatedTimeIsAbsentNotEpochZero(t *testing.T) {
+	// An unparsable timestamp must leave the field empty so the view renders a
+	// dash. Falling through to 0 would age every such container from 1970.
+	s := New(Limits{})
+	body := entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"container","name":"c","created":"not-a-number",`+
+			`"runtime":"docker","container_id":"abc123def456"`)
+	if err := s.Ingest("inventory", body); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := s.Host("h")
+	if got := d.Inventory.Containers[0].Created; got != 0 {
+		t.Errorf("created = %d, want 0 (absent) for an unparsable value", got)
+	}
+}
+
+func TestNonContainerKindsCarryNoContainerFields(t *testing.T) {
+	// A service has a "state" too. It must not leak into the container fields,
+	// which exist only to fill the container table's columns.
+	s := New(Limits{})
+	body := entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"service","name":"sshd","state":"running"`)
+	if err := s.Ingest("inventory", body); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := s.Host("h")
+	svc := d.Inventory.Services[0]
+	if svc.State != "" || svc.Image != "" || svc.Status != "" {
+		t.Errorf("service carries container fields: state=%q image=%q status=%q",
+			svc.State, svc.Image, svc.Status)
+	}
+	if svc.Detail != "state=running" {
+		t.Errorf("detail = %q, want the service's own summary", svc.Detail)
+	}
+}

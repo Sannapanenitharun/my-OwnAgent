@@ -164,6 +164,7 @@ const (
 	AttrUID          = "uid"
 	AttrContainerID  = "container_id"
 	AttrContainerImg = "image"
+	AttrCommand      = "command"
 	AttrStatus       = "status"
 	AttrPorts        = "ports"
 	AttrCreated      = "created"

@@ -52,11 +52,12 @@ func newDockerClient(socket string, timeout time.Duration) *dockerClient {
 // dockerContainer is the subset of GET /containers/json this agent reads.
 // Anything not needed to identify or describe a container is left unparsed.
 type dockerContainer struct {
-	ID     string   `json:"Id"`
-	Names  []string `json:"Names"`
-	Image  string   `json:"Image"`
-	State  string   `json:"State"`
-	Status string   `json:"Status"`
+	ID      string   `json:"Id"`
+	Names   []string `json:"Names"`
+	Image   string   `json:"Image"`
+	Command string   `json:"Command"`
+	State   string   `json:"State"`
+	Status  string   `json:"Status"`
 	// Created is Unix seconds.
 	Created int64 `json:"Created"`
 	Ports   []struct {
@@ -171,6 +172,7 @@ func enrichContainers(ctx context.Context, cli *dockerClient, facts []ContainerF
 		}
 		facts[i].Name = dockerName(d.Names)
 		facts[i].Image = strings.TrimSpace(d.Image)
+		facts[i].Command = strings.TrimSpace(d.Command)
 		facts[i].State = strings.TrimSpace(d.State)
 		facts[i].Status = strings.TrimSpace(d.Status)
 		facts[i].CreatedUnix = d.Created
