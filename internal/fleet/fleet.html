@@ -230,7 +230,7 @@
         <div class="chips" id="host-chips-traces"></div>
         <p class="hint" id="traces-hint">Spans received from this host.</p>
         <div class="panel"><table>
-          <thead><tr><th>Time</th><th>Span</th><th>Trace ID</th><th>Status</th></tr></thead>
+          <thead><tr><th>Time</th><th>Service</th><th>Span</th><th>Trace ID</th><th>Status</th></tr></thead>
           <tbody id="traces"></tbody>
         </table></div>
       </section>
@@ -584,15 +584,16 @@ function renderLogs() {
 
 function renderTraces() {
   var body = document.getElementById("traces");
-  if (!detail) { body.innerHTML = '<tr><td colspan="4" class="empty">Select a host.</td></tr>'; return; }
+  if (!detail) { body.innerHTML = '<tr><td colspan="5" class="empty">Select a host.</td></tr>'; return; }
   document.getElementById("traces-hint").textContent =
     detail.spans.length + " recent spans from " + (detail.name || detail.host) + " · " + detail.batches_traces + " batches received";
   body.innerHTML = detail.spans.length
     ? detail.spans.map(function (s) {
-        return "<tr><td>" + esc(new Date(s.time).toLocaleTimeString()) + "</td><td>" + esc(s.name) +
-          '</td><td class="mono">' + esc(s.trace_id) + "</td><td>" + esc(s.status || "—") + "</td></tr>";
+        return "<tr><td>" + esc(new Date(s.time).toLocaleTimeString()) + "</td><td>" + esc(s.service || "—") +
+          "</td><td>" + esc(s.name) + '</td><td class="mono" title="' + esc(s.trace_id) + '">' +
+          esc(traceRef(s.trace_id)) + "</td><td>" + spanStatusPill(s.status) + "</td></tr>";
       }).join("")
-    : '<tr><td colspan="4" class="empty">No spans received. Traces appear only when an instrumented ' +
+    : '<tr><td colspan="5" class="empty">No spans received. Traces appear only when an instrumented ' +
       "application sends OTLP to the agent's receiver — the agent does not generate them itself.</td></tr>";
 }
 
@@ -875,6 +876,24 @@ function severityPill(status, stream) {
   var label = sev || "-";
   var title = stream ? "stream: " + stream : "";
   return '<span class="pill ' + cls + '" title="' + esc(title) + '">' + esc(label) + "</span>";
+}
+
+// A span's status is not a log level. UNSET is the normal outcome of a
+// successful span -- most SDKs only set OK explicitly -- so it must read as
+// neutral rather than green, or "no status" and "succeeded" look identical.
+function spanStatusPill(status) {
+  var s = (status || "").toLowerCase();
+  var cls = s.indexOf("error") === 0 ? "bad" : s.indexOf("ok") === 0 ? "ok" : "";
+  return '<span class="pill ' + cls + '" title="' + esc(status || "unset") + '">' +
+    esc(status ? status.split(":")[0] : "unset") + "</span>";
+}
+
+// Trace IDs are 32 hex characters and every one of them is needed to look the
+// trace up elsewhere, so the cell shows the head and carries the whole id in
+// its title rather than truncating it away.
+function traceRef(id) {
+  if (!id) return "—";
+  return id.length > 16 ? id.slice(0, 16) + "…" : id;
 }
 
 // The kind is what disambiguates two endpoints that share a name -- a service

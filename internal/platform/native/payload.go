@@ -3,6 +3,7 @@ package native
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,13 +139,33 @@ func encodeTraces(resource []platform.Attr, payloads []platform.TracePayload, no
 	var spans []spanJSON
 	var raw []rawJSON
 	for _, p := range payloads {
+		// Content-Type decides which decoder is tried first, but neither is
+		// trusted to be right: an exporter that mislabels its body would
+		// otherwise have every span silently shipped as opaque bytes. Trying
+		// the other decoder on failure costs one parse of a body that was
+		// going to be discarded anyway.
 		if isJSON(p.ContentType, p.Body) {
-			parsed, ok := spansFromOTLPJSON(p.Body)
-			if ok && len(parsed) > 0 {
+			if parsed, ok := spansFromOTLPJSON(p.Body); ok && len(parsed) > 0 {
+				spans = append(spans, parsed...)
+				continue
+			}
+			if parsed, ok := spansFromOTLPProto(p.Body); ok && len(parsed) > 0 {
+				spans = append(spans, parsed...)
+				continue
+			}
+		} else {
+			if parsed, ok := spansFromOTLPProto(p.Body); ok && len(parsed) > 0 {
+				spans = append(spans, parsed...)
+				continue
+			}
+			if parsed, ok := spansFromOTLPJSON(p.Body); ok && len(parsed) > 0 {
 				spans = append(spans, parsed...)
 				continue
 			}
 		}
+		// Still undecoded: ship the bytes rather than drop them. Nothing
+		// downstream reads them today, but the archive keeps the body so a
+		// format this agent cannot parse is recoverable rather than lost.
 		raw = append(raw, rawJSON{
 			ContentType: p.ContentType,
 			BodyBase64:  base64.StdEncoding.EncodeToString(p.Body),
@@ -167,22 +188,23 @@ func encodeTraces(resource []platform.Attr, payloads []platform.TracePayload, no
 func spansFromOTLPJSON(body []byte) ([]spanJSON, bool) {
 	var top struct {
 		ResourceSpans []struct {
+			// The resource carries service.name. The protobuf decoder reads it,
+			// so this must too: otherwise the same application reports its
+			// service or not depending purely on which wire format it chose.
+			Resource struct {
+				Attributes []otlpKeyValue `json:"attributes"`
+			} `json:"resource"`
 			ScopeSpans []struct {
 				Spans []struct {
-					TraceID           string `json:"traceId"`
-					SpanID            string `json:"spanId"`
-					ParentSpanID      string `json:"parentSpanId"`
-					Name              string `json:"name"`
-					Kind              int    `json:"kind"`
-					StartTimeUnixNano string `json:"startTimeUnixNano"`
-					EndTimeUnixNano   string `json:"endTimeUnixNano"`
-					Attributes        []struct {
-						Key   string `json:"key"`
-						Value struct {
-							StringValue string `json:"stringValue"`
-						} `json:"value"`
-					} `json:"attributes"`
-					Status struct {
+					TraceID           string         `json:"traceId"`
+					SpanID            string         `json:"spanId"`
+					ParentSpanID      string         `json:"parentSpanId"`
+					Name              string         `json:"name"`
+					Kind              int            `json:"kind"`
+					StartTimeUnixNano string         `json:"startTimeUnixNano"`
+					EndTimeUnixNano   string         `json:"endTimeUnixNano"`
+					Attributes        []otlpKeyValue `json:"attributes"`
+					Status            struct {
 						Code    int    `json:"code"`
 						Message string `json:"message"`
 					} `json:"status"`
@@ -199,8 +221,18 @@ func spansFromOTLPJSON(body []byte) ([]spanJSON, bool) {
 			for _, sp := range ss.Spans {
 				attrs := map[string]string{}
 				for _, a := range sp.Attributes {
-					if a.Value.StringValue != "" {
-						attrs[a.Key] = a.Value.StringValue
+					if v := a.str(); v != "" {
+						attrs[a.Key] = v
+					}
+				}
+				// A span attribute wins over the resource's: it is the more
+				// specific statement. Same precedence as the protobuf path.
+				for _, a := range rs.Resource.Attributes {
+					if _, taken := attrs[a.Key]; taken {
+						continue
+					}
+					if v := a.str(); v != "" {
+						attrs[a.Key] = v
 					}
 				}
 				status := ""
@@ -232,6 +264,36 @@ func spansFromOTLPJSON(body []byte) ([]spanJSON, bool) {
 		}
 	}
 	return out, len(out) > 0
+}
+
+// otlpKeyValue is one OTLP attribute in proto3 JSON encoding. Both the span
+// and the resource use it, and both need every scalar type: keeping only
+// stringValue drops http.status_code and every duration, which are exactly the
+// attributes worth filtering on.
+type otlpKeyValue struct {
+	Key   string `json:"key"`
+	Value struct {
+		StringValue *string `json:"stringValue"`
+		BoolValue   *bool   `json:"boolValue"`
+		// proto3 JSON encodes 64-bit integers as strings, so this is not a
+		// number type by mistake.
+		IntValue    *string  `json:"intValue"`
+		DoubleValue *float64 `json:"doubleValue"`
+	} `json:"value"`
+}
+
+func (kv otlpKeyValue) str() string {
+	switch v := kv.Value; {
+	case v.StringValue != nil:
+		return *v.StringValue
+	case v.IntValue != nil:
+		return *v.IntValue
+	case v.BoolValue != nil:
+		return strconv.FormatBool(*v.BoolValue)
+	case v.DoubleValue != nil:
+		return strconv.FormatFloat(*v.DoubleValue, 'g', -1, 64)
+	}
+	return ""
 }
 
 func isJSON(contentType string, body []byte) bool {

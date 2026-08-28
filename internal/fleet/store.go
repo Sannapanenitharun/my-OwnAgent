@@ -162,10 +162,11 @@ type eventJSON struct {
 }
 
 type spanJSON struct {
-	TraceID string `json:"trace_id"`
-	SpanID  string `json:"span_id"`
-	Name    string `json:"name"`
-	Status  string `json:"status"`
+	TraceID    string            `json:"trace_id"`
+	SpanID     string            `json:"span_id"`
+	Name       string            `json:"name"`
+	Status     string            `json:"status"`
+	Attributes map[string]string `json:"attributes"`
 }
 
 // Ingest folds one received batch into the fleet view. A body that is not valid
@@ -258,6 +259,7 @@ func (s *Store) Ingest(signal string, body []byte) error {
 				TraceID: sp.TraceID,
 				SpanID:  sp.SpanID,
 				Name:    sp.Name,
+				Service: spanService(sp.Attributes),
 				Status:  sp.Status,
 				Time:    ts,
 			})
@@ -418,4 +420,22 @@ func (s *Store) pruneSeriesLocked(h *host, now time.Time) {
 // exited stops being listed with the CPU and memory it last had.
 func (s *Store) liveSeriesLocked(h *host, ser *series) bool {
 	return !ser.updated.Before(h.lastSeen.Add(-s.limits.SeriesStaleAfter))
+}
+
+// spanService names the application a span came from, and only ever from the
+// sender's own OTLP resource.
+//
+// It deliberately does NOT fall back to the batch's resource. That resource
+// belongs to the AGENT, so falling back to it labels a span from an
+// application that declared no service.name as "observability-agent" -- which
+// is not a missing answer but a wrong one, pointing an operator at the
+// collector instead of at whatever actually emitted the span. An unknown
+// service reads as unknown.
+func spanService(attrs map[string]string) string {
+	for _, k := range []string{"service.name", "service_name"} {
+		if v := attrs[k]; v != "" {
+			return v
+		}
+	}
+	return ""
 }

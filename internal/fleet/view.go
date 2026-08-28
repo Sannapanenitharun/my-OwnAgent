@@ -28,9 +28,13 @@ type LogLine struct {
 
 // Span is one recent span, reduced to what a list can usefully show.
 type Span struct {
-	TraceID string    `json:"trace_id"`
-	SpanID  string    `json:"span_id"`
-	Name    string    `json:"name"`
+	TraceID string `json:"trace_id"`
+	SpanID  string `json:"span_id"`
+	Name    string `json:"name"`
+	// Service is service.name from the sender's OTLP resource. Without it a
+	// list of spans from a host running twenty applications is twenty sets of
+	// anonymous operation names with no way to tell which sent which.
+	Service string    `json:"service,omitempty"`
 	Status  string    `json:"status,omitempty"`
 	Time    time.Time `json:"time"`
 }
