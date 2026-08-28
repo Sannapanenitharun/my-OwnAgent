@@ -457,3 +457,23 @@ var (
 	_ platform.CounterSnapshotter   = (*Telemetry)(nil)
 	_ platform.HistogramSnapshotter = (*Telemetry)(nil)
 )
+
+// RetireSeries implements platform.SeriesRetirer. It removes one gauge series
+// so a subject that no longer exists stops being reported and stops counting
+// against the cardinality bound.
+//
+// Only gauges are retired. A counter is a running total whose meaning does not
+// depend on its subject still being there, and a histogram is an aggregate
+// nobody would expect to vanish.
+func (t *Telemetry) RetireSeries(name string, attrs ...platform.Attr) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	series, ok := t.gauges[name]
+	if !ok {
+		return
+	}
+	delete(series, seriesKey(attrs))
+	if len(series) == 0 {
+		delete(t.gauges, name)
+	}
+}

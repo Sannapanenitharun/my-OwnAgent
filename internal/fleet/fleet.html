@@ -762,13 +762,16 @@ function renderInvTable(list) {
   }
 
   if (invTab === "processes") {
-    head.innerHTML = "<tr><th>Application</th><th>Instances</th><th>CPU</th><th>Memory (RSS)</th><th>PID</th></tr>";
+    // No PID column. A row here is an executable, not a process: the
+    // containerd-shim row stands for twenty-one processes and the docker-proxy
+    // row for fifty, so any single PID beside it would be a lie. PID belongs
+    // on Services and Endpoints, where there is exactly one.
+    head.innerHTML = "<tr><th>Application</th><th>Instances</th><th>CPU</th><th>Memory (RSS)</th></tr>";
     body.innerHTML = list.map(function (it) {
       return '<tr><td class="mono">' + esc(it.name) + "</td>" +
         '<td class="mono">' + (it.count ? num(it.count) : "-") + "</td>" +
         '<td class="mono">' + (it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "-") + "</td>" +
-        '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td>" +
-        '<td class="mono" style="color:var(--muted)">' + esc(it.pid || "-") + "</td></tr>";
+        '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td></tr>";
     }).join("");
     return;
   }

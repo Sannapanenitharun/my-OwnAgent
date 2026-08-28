@@ -360,3 +360,11 @@ type nop struct{}
 func (nop) Add(int64, ...platform.Attr)       {}
 func (nop) Set(float64, ...platform.Attr)     {}
 func (nop) Observe(float64, ...platform.Attr) {}
+
+// RetireSeries implements platform.SeriesRetirer by forwarding to the wrapped
+// telemetry. Without this the exporter, which is what a module actually holds,
+// would silently swallow every retirement and the series it exports would
+// still be the ones that leaked.
+func (e *Exporter) RetireSeries(name string, attrs ...platform.Attr) {
+	platform.RetireSeries(e.inner, name, attrs...)
+}

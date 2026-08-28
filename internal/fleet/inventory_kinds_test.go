@@ -3,6 +3,7 @@ package fleet
 import (
 	"sort"
 	"testing"
+	"time"
 )
 
 // TestEveryEntityKindSurvivesIngest is the regression test for the defect this
@@ -341,5 +342,115 @@ func TestRootMountIsNotTrimmedAway(t *testing.T) {
 	}
 	if got := normalizeMount(`C:\`); got != "C:" {
 		t.Errorf(`normalizeMount(C:\) = %q, want C:`, got)
+	}
+}
+
+func TestExitedProgramsLeaveTheApplicationsList(t *testing.T) {
+	// A program that exits stops being reported, but its last values sit in
+	// the store forever. The tab listed 377 executables on a host running 232,
+	// each dead one still showing the CPU and memory it had when it died.
+	s := New(Limits{SeriesStaleAfter: time.Minute})
+	old := `{"schema":"obsagent.v1","signal":"metrics","host":"h","timestamp":"2026-01-01T00:00:00Z","metrics":{"gauges":[
+	  {"name":"process.memory.rss","value":500,"attributes":{"executable":"gone"}}]}}`
+	if err := s.Ingest("metrics", []byte(old)); err != nil {
+		t.Fatal(err)
+	}
+	fresh := `{"schema":"obsagent.v1","signal":"metrics","host":"h","metrics":{"gauges":[
+	  {"name":"process.memory.rss","value":900,"attributes":{"executable":"alive"}}]}}`
+	if err := s.Ingest("metrics", []byte(fresh)); err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := s.Host("h")
+	var names []string
+	for _, p := range d.Inventory.Processes {
+		names = append(names, p.Name)
+	}
+	if len(names) != 1 || names[0] != "alive" {
+		t.Errorf("applications = %v, want only the program still running", names)
+	}
+	if d.InvCounts["processes"] != 1 {
+		t.Errorf("chip says %d, want 1", d.InvCounts["processes"])
+	}
+}
+
+func TestUnmountedFilesystemStopsReportingItsUsage(t *testing.T) {
+	// A mount that went away must not keep claiming how full it was.
+	s := New(Limits{SeriesStaleAfter: time.Minute})
+	if err := s.Ingest("inventory", entityBody("h", "discovery.entity.discovered",
+		`"entity.kind":"filesystem","mountpoint":"/mnt/gone","fstype":"ext4"`)); err != nil {
+		t.Fatal(err)
+	}
+	stale := `{"schema":"obsagent.v1","signal":"metrics","host":"h","timestamp":"2026-01-01T00:00:00Z","metrics":{"gauges":[
+	  {"name":"host.filesystem.total_bytes","value":100,"attributes":{"mountpoint":"/mnt/gone"}},
+	  {"name":"host.filesystem.utilization","value":0.9,"attributes":{"mountpoint":"/mnt/gone"}}]}}`
+	if err := s.Ingest("metrics", []byte(stale)); err != nil {
+		t.Fatal(err)
+	}
+	// A later batch establishes that the host is still reporting.
+	if err := s.Ingest("metrics", []byte(`{"schema":"obsagent.v1","signal":"metrics","host":"h","metrics":{"gauges":[
+	  {"name":"host.cpu.utilization","value":0.1,"attributes":{}}]}}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := s.Host("h")
+	fs := d.Inventory.Filesystems[0]
+	// The mount is still an entity, so it is still listed -- but with no usage.
+	if fs.TotalBytes != 0 || fs.UsedPercent != 0 {
+		t.Errorf("stale usage survived: total=%v pct=%v", fs.TotalBytes, fs.UsedPercent)
+	}
+}
+
+func TestDeadSeriesAreReclaimedBeforeLiveOnesAreRefused(t *testing.T) {
+	// Past the cap the store refuses NEW series, which is right -- churn must
+	// not evict host.*. But dead series were counted against that cap, so a
+	// host that churned through executables eventually rejected the ones that
+	// still existed.
+	s := New(Limits{SeriesPerHost: 3, SeriesStaleAfter: time.Minute})
+	for _, exe := range []string{"a", "b", "c"} {
+		body := `{"schema":"obsagent.v1","signal":"metrics","host":"h","timestamp":"2026-01-01T00:00:00Z",` +
+			`"metrics":{"gauges":[{"name":"process.memory.rss","value":1,"attributes":{"executable":"` + exe + `"}}]}}`
+		if err := s.Ingest("metrics", []byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The cap is full of series last seen in 2026-01-01. A live one arrives.
+	live := `{"schema":"obsagent.v1","signal":"metrics","host":"h","metrics":{"gauges":[
+	  {"name":"process.memory.rss","value":42,"attributes":{"executable":"now"}}]}}`
+	if err := s.Ingest("metrics", []byte(live)); err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := s.Host("h")
+	if len(d.Inventory.Processes) != 1 || d.Inventory.Processes[0].Name != "now" {
+		t.Fatalf("applications = %+v, want the live program admitted", d.Inventory.Processes)
+	}
+}
+
+func TestChartedSeriesAreNeverPruned(t *testing.T) {
+	// host.* series carry the history the charts draw. Losing one to make room
+	// for a process that has already exited would put a hole in a chart.
+	s := New(Limits{SeriesPerHost: 2, SeriesStaleAfter: time.Minute})
+	charted := `{"schema":"obsagent.v1","signal":"metrics","host":"h","timestamp":"2026-01-01T00:00:00Z","metrics":{"gauges":[
+	  {"name":"host.cpu.utilization","value":0.5,"attributes":{"state":"busy"}},
+	  {"name":"process.memory.rss","value":1,"attributes":{"executable":"dead"}}]}}`
+	if err := s.Ingest("metrics", []byte(charted)); err != nil {
+		t.Fatal(err)
+	}
+	newer := `{"schema":"obsagent.v1","signal":"metrics","host":"h","metrics":{"gauges":[
+	  {"name":"process.memory.rss","value":2,"attributes":{"executable":"live"}}]}}`
+	if err := s.Ingest("metrics", []byte(newer)); err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := s.Host("h")
+	var found bool
+	for _, m := range d.Metrics {
+		if m.Name == "host.cpu.utilization" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the charted host.* series was pruned to make room for a process")
 	}
 }

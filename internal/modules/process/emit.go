@@ -158,13 +158,57 @@ type emitter struct {
 
 	buf []platform.Attr
 
+	// emitted names the executables whose gauges were set last cycle, so the
+	// ones that have since gone can be withdrawn. Without it a gauge set once
+	// is exported forever: the executable list is a union of everything the
+	// host has ever run rather than what is running, and it grows until it
+	// fills MaxExecutables with the dead.
+	emitted map[string]struct{}
+
 	items         int64
 	eventsCycle   int
 	eventsDropped int64
 }
 
 func newEmitter(inst *instruments, s Settings) *emitter {
-	return &emitter{inst: inst, settings: s, buf: make([]platform.Attr, 0, 4)}
+	return &emitter{
+		inst:     inst,
+		settings: s,
+		buf:      make([]platform.Attr, 0, 4),
+		emitted:  make(map[string]struct{}),
+	}
+}
+
+// perExecutableGauges is every gauge keyed by executable. All of them have to
+// be withdrawn together: retiring the instance count while leaving the memory
+// reading behind would show a program with no processes still holding a
+// gigabyte.
+var perExecutableGauges = []string{
+	MetricInstances, MetricCPUUtilization, MetricMemoryRSS,
+	MetricMemoryVirtual, MetricThreadCount, MetricOpenFiles, MetricStartTime,
+}
+
+// retireVanished withdraws the gauges of executables that were reported last
+// cycle and are not in this one.
+//
+// An executable leaves for two reasons and this treats them the same, which is
+// correct: the program exited, or it fell out of the top MaxExecutables. In
+// both cases the agent has stopped measuring it, and a latest-value gauge with
+// nothing behind it is not data.
+//
+// Counters are left alone. MetricIOReadBytes is a running total, and a total
+// does not stop being true because the process that accumulated it ended.
+func (e *emitter) retireVanished(current map[string]struct{}) {
+	for name := range e.emitted {
+		if _, still := current[name]; still {
+			continue
+		}
+		attr := platform.A(AttrExecutable, name)
+		for _, metric := range perExecutableGauges {
+			platform.RetireSeries(e.inst.telemetry, metric, attr)
+		}
+	}
+	e.emitted = current
 }
 
 func (e *emitter) setEntity(hostID string) {
@@ -234,7 +278,11 @@ func (e *emitter) emitAggregate(total int, byState map[State]int, stateSupported
 
 // emitRollups publishes the per-executable metrics.
 func (e *emitter) emitRollups(rollups []*rollup) {
+	current := make(map[string]struct{}, len(rollups))
+	defer func() { e.retireVanished(current) }()
+
 	for _, r := range rollups {
+		current[r.Name] = struct{}{}
 		attr := platform.A(AttrExecutable, r.Name)
 		e.gauge(MetricInstances, float64(r.Instances), attr)
 		if r.HasCPU {

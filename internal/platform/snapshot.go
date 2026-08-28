@@ -104,3 +104,33 @@ func SnapshotEvents(tel Telemetry) []Event {
 	}
 	return s.EventSnapshot()
 }
+
+// SeriesRetirer is an optional Telemetry capability for withdrawing a gauge
+// series whose subject no longer exists.
+//
+// A gauge is a LATEST VALUE, and a store of latest values has no way to learn
+// that a program exited: the module simply stops setting it, and the last
+// reading sits there being re-exported forever. That is wrong twice over. The
+// value is a lie -- an executable that died at noon still reporting the memory
+// it held at noon -- and the series is a leak, because an unbounded label like
+// an executable name accumulates one dead series per program the host ever ran
+// until the cardinality cap is full of things that no longer exist and starts
+// refusing the ones that do.
+//
+// This is deliberately NOT a way to hide a zero. A metric that reaches zero
+// must keep reporting zero, or nobody can alert on it; see the process module's
+// emitAggregate, which emits zero counts on purpose. Retiring is for a series
+// whose SUBJECT is gone, where there is no value to report because there is no
+// longer anything to measure.
+type SeriesRetirer interface {
+	RetireSeries(name string, attrs ...Attr)
+}
+
+// RetireSeries withdraws a series if tel supports it, and is a no-op otherwise.
+// A caller must treat retirement as best-effort: an adapter that cannot forget
+// a series is not broken, it is just less tidy.
+func RetireSeries(tel Telemetry, name string, attrs ...Attr) {
+	if r, ok := tel.(SeriesRetirer); ok {
+		r.RetireSeries(name, attrs...)
+	}
+}

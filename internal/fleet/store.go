@@ -20,14 +20,15 @@ import (
 
 // Limits bound what one Store may retain. Zero values fall back to defaults.
 type Limits struct {
-	Hosts           int           // distinct hosts before the stalest is evicted
-	SeriesPerHost   int           // latest-value series kept per host
-	HistorySeries   int           // host.* series that also keep a sample ring
-	HistoryPoints   int           // samples per history series
-	LogsPerHost     int           // recent log lines kept per host
-	SpansPerHost    int           // recent spans kept per host
-	EntitiesPerHost int           // discovered entities kept per host
-	StaleAfter      time.Duration // silence before a host is reported stale
+	Hosts            int           // distinct hosts before the stalest is evicted
+	SeriesPerHost    int           // latest-value series kept per host
+	HistorySeries    int           // host.* series that also keep a sample ring
+	HistoryPoints    int           // samples per history series
+	LogsPerHost      int           // recent log lines kept per host
+	SpansPerHost     int           // recent spans kept per host
+	EntitiesPerHost  int           // discovered entities kept per host
+	StaleAfter       time.Duration // silence before a host is reported stale
+	SeriesStaleAfter time.Duration // silence before a series is treated as gone
 }
 
 func (l Limits) withDefaults() Limits {
@@ -36,6 +37,20 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.SeriesPerHost <= 0 {
 		l.SeriesPerHost = 4096
+	}
+	// A series stops arriving when the thing it measured is gone. Nothing says
+	// so explicitly -- the agent reports what exists, not what stopped -- so
+	// the only evidence is silence, and the window is how long to wait before
+	// believing it.
+	//
+	// It is sized against the metrics this is actually used on: process.* on a
+	// 30s collection interval and host.filesystem.* on 60s, both re-exported
+	// every export cycle. Five minutes is several missed collections for the
+	// slowest of them, so a live series is never mistaken for a dead one,
+	// while a program that exits leaves the view in minutes rather than
+	// lingering for a quarter of an hour.
+	if l.SeriesStaleAfter <= 0 {
+		l.SeriesStaleAfter = 5 * time.Minute
 	}
 	if l.HistorySeries <= 0 {
 		l.HistorySeries = 256
@@ -253,8 +268,15 @@ func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time) {
 	key := seriesKey(m.Name, m.Attributes)
 	ser := h.series[key]
 	if ser == nil {
-		// Past the cap, drop the new series rather than evicting an existing
-		// one: churn (a restarting process changing its pid attribute) would
+		if len(h.series) >= s.limits.SeriesPerHost {
+			// Reclaim series nothing has reported in a long time first. A host
+			// that churns through short-lived executables accumulates a dead
+			// series per program, and without this the cap fills with things
+			// that no longer exist and then rejects the ones that do.
+			s.pruneSeriesLocked(h, ts)
+		}
+		// Still past the cap: drop the new series rather than evicting a live
+		// one. Churn (a restarting process changing its pid attribute) would
 		// otherwise evict the stable host.* series the UI depends on.
 		if len(h.series) >= s.limits.SeriesPerHost {
 			h.dropped++
@@ -350,4 +372,31 @@ func copyAttrs(in map[string]string) map[string]string {
 		return nil
 	}
 	return out
+}
+
+// pruneSeriesLocked drops series nothing has reported within the staleness
+// window. It runs only when the per-host cap is reached, so the common path
+// pays nothing for it.
+//
+// A series that keeps its history ring is kept regardless: those are the
+// host.* series the charts draw, they are few, and they are bounded
+// separately. Losing one would put a hole in a chart to make room for a
+// process that has already exited.
+func (s *Store) pruneSeriesLocked(h *host, now time.Time) {
+	cutoff := now.Add(-s.limits.SeriesStaleAfter)
+	for key, ser := range h.series {
+		if len(ser.history) > 0 {
+			continue
+		}
+		if ser.updated.Before(cutoff) {
+			delete(h.series, key)
+		}
+	}
+}
+
+// liveSeriesLocked reports whether a series has been reported recently enough
+// to describe something that still exists. The view uses it so a program that
+// exited stops being listed with the CPU and memory it last had.
+func (s *Store) liveSeriesLocked(h *host, ser *series) bool {
+	return !ser.updated.Before(h.lastSeen.Add(-s.limits.SeriesStaleAfter))
 }

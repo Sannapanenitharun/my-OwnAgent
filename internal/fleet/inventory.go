@@ -264,6 +264,13 @@ func (s *Store) applicationsLocked(h *host) []InventoryItem {
 		if !strings.HasPrefix(ser.name, "process.") || ser.attrs == nil {
 			continue
 		}
+		// A program that exited stops being reported, but its last values sit
+		// in the store forever. Without this the tab listed every executable
+		// the host had ever run -- 377 rows for 232 running programs -- each
+		// with the CPU and memory it had at the moment it died.
+		if !s.liveSeriesLocked(h, ser) {
+			continue
+		}
 		p := get(ser.attrs)
 		if p == nil {
 			continue
@@ -306,6 +313,10 @@ func (s *Store) joinFilesystemUsageLocked(h *host, mounts []InventoryItem) {
 	byMount := map[string]*usage{}
 	for _, ser := range h.series {
 		if !strings.HasPrefix(ser.name, "host.filesystem.") || ser.attrs == nil {
+			continue
+		}
+		// An unmounted filesystem must not keep reporting how full it was.
+		if !s.liveSeriesLocked(h, ser) {
 			continue
 		}
 		mp := normalizeMount(ser.attrs["mountpoint"])
