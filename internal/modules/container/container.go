@@ -28,8 +28,21 @@ const (
 	MetricRunning        = "container.running"
 	MetricMemoryUsage    = "container.memory.usage_bytes"
 	MetricCPUUtilization = "container.cpu.utilization"
-	MetricCycleOK        = "container.cycle.success"
-	MetricCycleFail      = "container.cycle.failure"
+	// AttrContainerID keys the per-container series. It is the same short ID
+	// the log lines carry, so the view joins both to a name the same way.
+	AttrContainerID = "container_id"
+
+	// The per-container series get their OWN names rather than adding a
+	// container_id label to the rollup. Two series under one name where one is
+	// the sum of the others is a footgun: anything that aggregates the metric
+	// without inspecting label sets counts every container twice. Renaming the
+	// rollup instead was not an option -- metric names are an operator-facing
+	// contract, and runbooks key off them.
+	MetricInstanceMemory = "container.instance.memory_bytes"
+	MetricInstanceCPU    = "container.instance.cpu_utilization"
+
+	MetricCycleOK   = "container.cycle.success"
+	MetricCycleFail = "container.cycle.failure"
 )
 
 // Module reads cgroup metrics for containers discovered on this host.
@@ -38,8 +51,12 @@ type Module struct {
 	settings Settings
 	started  bool
 	lastOK   time.Time
-	lastErr  string
-	cycles   int64
+
+	// emittedIDs is the set of containers whose series were set last cycle,
+	// so the ones that have since stopped can be withdrawn.
+	emittedIDs map[string]struct{}
+	lastErr    string
+	cycles     int64
 
 	host   module.Host
 	cancel context.CancelFunc
@@ -143,6 +160,7 @@ func (m *Module) collect() {
 	m.mu.RLock()
 	h := m.host
 	max := m.settings.Max
+	perContainer := m.settings.PerContainer
 	m.mu.RUnlock()
 	if h.Telemetry == nil {
 		return
@@ -185,6 +203,9 @@ func (m *Module) collect() {
 			h.Telemetry.Gauge(MetricCPUUtilization).Set(a.cpuSum/float64(a.cpuN), attr)
 		}
 	}
+	if perContainer {
+		m.emitPerContainer(h, samples)
+	}
 	h.Telemetry.Counter(MetricCycleOK).Add(1)
 	m.mu.Lock()
 	m.cycles++
@@ -194,3 +215,42 @@ func (m *Module) collect() {
 }
 
 var _ module.Module = (*Module)(nil)
+
+// emitPerContainer publishes CPU and memory for each container and withdraws
+// the series of any container that is no longer running.
+//
+// The retirement is what makes this affordable. A container ID is unbounded,
+// so without it every container the host ever ran would leave a permanent
+// series holding the memory it had when it died -- which is exactly why this
+// module reported only a runtime rollup until now.
+func (m *Module) emitPerContainer(h module.Host, samples []sample) {
+	current := make(map[string]struct{}, len(samples))
+	mem := h.Telemetry.Gauge(MetricInstanceMemory)
+	cpu := h.Telemetry.Gauge(MetricInstanceCPU)
+
+	for _, s := range samples {
+		if s.ShortID == "" {
+			continue
+		}
+		current[s.ShortID] = struct{}{}
+		attr := platform.A(AttrContainerID, s.ShortID)
+		mem.Set(float64(s.MemoryBytes), attr)
+		if s.CPUUtil >= 0 {
+			cpu.Set(s.CPUUtil, attr)
+		}
+	}
+
+	m.mu.Lock()
+	previous := m.emittedIDs
+	m.emittedIDs = current
+	m.mu.Unlock()
+
+	for id := range previous {
+		if _, still := current[id]; still {
+			continue
+		}
+		attr := platform.A(AttrContainerID, id)
+		platform.RetireSeries(h.Telemetry, MetricInstanceMemory, attr)
+		platform.RetireSeries(h.Telemetry, MetricInstanceCPU, attr)
+	}
+}

@@ -738,12 +738,17 @@ function renderInvTable(list) {
   }
 
   if (invTab === "containers") {
-    // The `docker ps` column set, with one deliberate departure: the name sits
-    // beside the ID rather than last. `docker ps` puts NAMES at the far right
+    // The `docker ps` column set plus what `docker ps` cannot tell you: how
+    // much each container is actually using. The rollup metric only ever said
+    // "21 containers are using 5.3 GB between them", and the question is which
+    // one. Command moved out to make room -- it is still in the row title.
+    //
+    // One deliberate departure from docker ps: the name sits beside the ID
+    // rather than last. `docker ps` puts NAMES at the far right
     // because a terminal is only as wide as it is; in a table the two
     // identifiers belong together, and the name is what an operator scans for.
-    head.innerHTML = "<tr><th>Container ID</th><th>Name</th><th>Image</th><th>Command</th>" +
-      "<th>Created</th><th>Status</th><th>Ports</th></tr>";
+    head.innerHTML = "<tr><th>Container ID</th><th>Name</th><th>Image</th><th>CPU</th>" +
+      "<th>Memory</th><th>Created</th><th>Status</th><th>Ports</th></tr>";
     body.innerHTML = list.map(function (it) {
       // Status is the live one ("Up 28 hours"); state ("running", "exited") is
       // the fallback for an agent that reported only the coarse value.
@@ -751,10 +756,11 @@ function renderInvTable(list) {
       var statusCell = status
         ? '<span class="pill ' + (/^up|^running/i.test(status) ? "ok" : "warn") + '">' + esc(status) + "</span>"
         : "-";
-      return '<tr><td class="mono" style="color:var(--muted)">' + esc(shortID(it.id)) + "</td>" +
+      return '<tr title="' + esc(it.command || "") + '"><td class="mono" style="color:var(--muted)">' + esc(shortID(it.id)) + "</td>" +
         '<td class="mono">' + esc(it.name) + "</td>" +
         '<td class="mono">' + esc(it.image || "-") + "</td>" +
-        '<td class="mono" title="' + esc(it.command) + '">' + esc(clip(it.command, 24)) + "</td>" +
+        '<td class="mono">' + (it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "-") + "</td>" +
+        '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td>" +
         '<td class="mono" style="color:var(--muted); white-space:nowrap">' + esc(ago(it.created)) + "</td>" +
         "<td>" + statusCell + "</td>" +
         '<td class="mono">' + esc(it.ports || "-") + "</td></tr>";

@@ -209,6 +209,7 @@ func (s *Store) inventoryLocked(h *host) Inventory {
 	inv.Processes = append(inv.Processes, apps...)
 
 	s.joinFilesystemUsageLocked(h, inv.Filesystems)
+	s.joinContainerUsageLocked(h, inv.Containers)
 	inv.Topology = s.topologyLocked(h)
 
 	sortItems(inv.Containers)
@@ -742,4 +743,65 @@ func (s *Store) topologyLocked(h *host) []Relation {
 		return out[i].To < out[j].To
 	})
 	return out
+}
+
+// joinContainerUsageLocked fills in each container's CPU and memory from the
+// container.instance.* series.
+//
+// The join key is the container ID, which the metrics carry and the entity
+// carries, and which the agent shortens to twelve characters on the metric
+// side. Matching on a prefix rather than equality is what lets the full ID on
+// the entity meet the short one on the series -- the same accommodation the
+// log lines already need.
+func (s *Store) joinContainerUsageLocked(h *host, containers []InventoryItem) {
+	if len(containers) == 0 {
+		return
+	}
+	type usage struct{ cpu, mem float64 }
+	byID := map[string]*usage{}
+	for _, ser := range h.series {
+		if !strings.HasPrefix(ser.name, "container.instance.") || ser.attrs == nil {
+			continue
+		}
+		if !s.liveSeriesLocked(h, ser) {
+			continue
+		}
+		id := ser.attrs["container_id"]
+		if id == "" {
+			continue
+		}
+		u := byID[id]
+		if u == nil {
+			u = &usage{}
+			byID[id] = u
+		}
+		switch ser.name {
+		case "container.instance.memory_bytes":
+			u.mem = ser.value
+		case "container.instance.cpu_utilization":
+			u.cpu = ser.value
+		}
+	}
+	if len(byID) == 0 {
+		return
+	}
+	for i := range containers {
+		id := containers[i].ID
+		if id == "" {
+			continue
+		}
+		u := byID[id]
+		if u == nil {
+			for shortID, cand := range byID {
+				if len(shortID) >= 12 && strings.HasPrefix(id, shortID) {
+					u = cand
+					break
+				}
+			}
+		}
+		if u == nil {
+			continue
+		}
+		containers[i].CPU, containers[i].Memory = u.cpu, u.mem
+	}
 }

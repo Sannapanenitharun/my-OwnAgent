@@ -42,13 +42,27 @@ const (
 
 // Settings is decoded from module settings. Unknown keys are rejected.
 type Settings struct {
-	Listen   string
+	// Listen is one or more comma-separated host:port addresses.
+	//
+	// More than one, because of where the senders are. A container on a
+	// user-defined Docker network cannot route to the host's loopback, and it
+	// cannot route to another network's bridge gateway either -- each network
+	// reaches the host only at its OWN gateway address. A host running six
+	// bridges therefore has six private addresses its containers can reach,
+	// and a single listener serves at most one of them.
+	//
+	// The alternative is 0.0.0.0, and that is the thing to avoid: this
+	// receiver takes unauthenticated OTLP, so on any host whose firewall
+	// permits the port it would accept spans, metrics and logs from the
+	// internet. Binding the specific private addresses reaches every container
+	// while remaining unroutable from outside.
+	Listen   []string
 	MaxBody  int
 	MaxQueue int
 }
 
 func DefaultSettings() Settings {
-	return Settings{Listen: defaultListen, MaxBody: defaultMaxBody, MaxQueue: defaultMaxQueue}
+	return Settings{Listen: []string{defaultListen}, MaxBody: defaultMaxBody, MaxQueue: defaultMaxQueue}
 }
 
 func ParseSettings(mc config.ModuleConfig) (Settings, error) {
@@ -61,14 +75,28 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 		}
 	}
 	if v, ok := mc.Settings["listen"]; ok {
-		v = strings.TrimSpace(v)
-		if v == "" {
+		addrs := make([]string, 0, 4)
+		seen := map[string]bool{}
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, _, err := net.SplitHostPort(part); err != nil {
+				return Settings{}, fmt.Errorf("otel-engine: listen %q: %w", part, err)
+			}
+			// A repeated address would fail to bind the second time and take
+			// the module down over a typo in a list.
+			if seen[part] {
+				continue
+			}
+			seen[part] = true
+			addrs = append(addrs, part)
+		}
+		if len(addrs) == 0 {
 			return Settings{}, fmt.Errorf("otel-engine: listen must not be empty")
 		}
-		if _, _, err := net.SplitHostPort(v); err != nil {
-			return Settings{}, fmt.Errorf("otel-engine: listen: %w", err)
-		}
-		s.Listen = v
+		s.Listen = addrs
 	}
 	if v, ok := mc.Settings["max.body_bytes"]; ok {
 		n, err := strconv.Atoi(v)
@@ -99,7 +127,7 @@ type Module struct {
 
 	host module.Host
 	srv  *http.Server
-	ln   net.Listener
+	lns  []net.Listener
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -127,20 +155,33 @@ func (m *Module) Start(ctx context.Context, h module.Host) error {
 		return fmt.Errorf("otel-engine: authorization refused: %w", err)
 	}
 
-	ln, err := net.Listen("tcp", settings.Listen)
-	if err != nil {
-		return fmt.Errorf("otel-engine: listen %s: %w", settings.Listen, err)
+	// Bind every address before committing to any of them. A partial bind
+	// would leave the receiver reachable from some networks and not others,
+	// which is worse than not starting: the containers that could not reach it
+	// would look like containers that are not instrumented.
+	lns := make([]net.Listener, 0, len(settings.Listen))
+	for _, addr := range settings.Listen {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			for _, open := range lns {
+				_ = open.Close()
+			}
+			return fmt.Errorf("otel-engine: listen %s: %w", addr, err)
+		}
+		lns = append(lns, ln)
 	}
 
 	m.mu.Lock()
 	if m.started {
 		m.mu.Unlock()
-		_ = ln.Close()
+		for _, ln := range lns {
+			_ = ln.Close()
+		}
 		return errors.New("otel-engine: already started")
 	}
 	m.settings = settings
 	m.host = h
-	m.ln = ln
+	m.lns = lns
 	m.started = true
 	m.done = make(chan struct{})
 	mux := http.NewServeMux()
@@ -150,18 +191,28 @@ func (m *Module) Start(ctx context.Context, h module.Host) error {
 	m.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	m.mu.Unlock()
 
-	h.Logger.Info("otlp http receiver listening", "addr", ln.Addr().String())
-
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	m.mu.Lock()
 	m.cancel = cancel
 	m.mu.Unlock()
+
+	// One goroutine per listener, all serving the same mux. done closes when
+	// the last of them returns, so Stop waits for all of them.
+	var wg sync.WaitGroup
+	for _, ln := range lns {
+		h.Logger.Info("otlp http receiver listening", "addr", ln.Addr().String())
+		wg.Add(1)
+		go func(ln net.Listener) {
+			defer wg.Done()
+			err := m.srv.Serve(ln)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) && runCtx.Err() == nil {
+				h.ReportFailure(err)
+			}
+		}(ln)
+	}
 	go func() {
-		defer close(m.done)
-		err := m.srv.Serve(ln)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) && runCtx.Err() == nil {
-			h.ReportFailure(err)
-		}
+		wg.Wait()
+		close(m.done)
 	}()
 	return nil
 }
@@ -258,7 +309,7 @@ func (m *Module) Health(context.Context) health.Report {
 	if m.dropped > 0 {
 		return health.DegradedReport(fmt.Sprintf("receiver dropped %d payloads to the queue bound", m.dropped))
 	}
-	return health.OK("OTLP/HTTP receiver is listening on " + m.settings.Listen)
+	return health.OK("OTLP/HTTP receiver is listening on " + strings.Join(m.settings.Listen, ", "))
 }
 
 func (m *Module) PrepareConfig(_ context.Context, mc config.ModuleConfig) error {
