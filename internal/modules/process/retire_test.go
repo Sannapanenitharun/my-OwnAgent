@@ -39,6 +39,10 @@ func gaugeValue(t *inproc.Telemetry, name, exe string) (float64, bool) {
 func TestExitedExecutableStopsBeingReported(t *testing.T) {
 	tel := inproc.NewTelemetry()
 	e := newEmitter(newInstruments(tel), DefaultSettings())
+	// Production always resolves a host entity, and e.with prepends it to
+	// every series. An emitter without one does not exercise the series key
+	// that actually gets stored.
+	e.setEntity("host-1")
 
 	e.emitRollups([]*rollup{
 		{Name: "nginx", Instances: 2, HasRSS: true, RSSBytes: 1024},
@@ -72,6 +76,10 @@ func TestRetirementFreesTheCardinalityBudget(t *testing.T) {
 	// things that no longer exist and starts refusing the ones that do.
 	tel := inproc.NewTelemetry()
 	e := newEmitter(newInstruments(tel), DefaultSettings())
+	// Production always resolves a host entity, and e.with prepends it to
+	// every series. An emitter without one does not exercise the series key
+	// that actually gets stored.
+	e.setEntity("host-1")
 
 	for i := 0; i < 50; i++ {
 		e.emitRollups([]*rollup{{Name: "short-lived-" + itoa(i), Instances: 1}})
@@ -86,6 +94,10 @@ func TestExecutableThatComesBackIsReportedAgain(t *testing.T) {
 	// disappears and returns, and it has to reappear each time.
 	tel := inproc.NewTelemetry()
 	e := newEmitter(newInstruments(tel), DefaultSettings())
+	// Production always resolves a host entity, and e.with prepends it to
+	// every series. An emitter without one does not exercise the series key
+	// that actually gets stored.
+	e.setEntity("host-1")
 
 	e.emitRollups([]*rollup{{Name: "backup", Instances: 1}})
 	e.emitRollups(nil)
@@ -106,6 +118,10 @@ func TestCountersAreNotRetired(t *testing.T) {
 	// counter reset to anything computing a rate.
 	tel := inproc.NewTelemetry()
 	e := newEmitter(newInstruments(tel), DefaultSettings())
+	// Production always resolves a host entity, and e.with prepends it to
+	// every series. An emitter without one does not exercise the series key
+	// that actually gets stored.
+	e.setEntity("host-1")
 
 	e.emitRollups([]*rollup{{Name: "gone", HasIO: true, IORead: 4096, IOWrite: 100}})
 	e.emitRollups(nil)
@@ -129,6 +145,10 @@ func TestAggregateGaugesSurviveAnEmptyCycle(t *testing.T) {
 	// closed attribute set and a zero there is a measurement, not an absence.
 	tel := inproc.NewTelemetry()
 	e := newEmitter(newInstruments(tel), DefaultSettings())
+	// Production always resolves a host entity, and e.with prepends it to
+	// every series. An emitter without one does not exercise the series key
+	// that actually gets stored.
+	e.setEntity("host-1")
 
 	e.emitAggregate(12, map[State]int{}, false)
 	e.emitRollups([]*rollup{{Name: "gone", Instances: 1}})
@@ -149,6 +169,7 @@ func TestRetirementSurvivesATelemetryThatCannotForget(t *testing.T) {
 	// Retirement is best-effort: an adapter that cannot forget a series is not
 	// broken, and the module must not depend on it having worked.
 	e := newEmitter(newInstruments(noRetireTelemetry{inproc.NewTelemetry()}), DefaultSettings())
+	e.setEntity("host-1")
 	e.emitRollups([]*rollup{{Name: "a", Instances: 1}})
 	e.emitRollups(nil) // must not panic
 }

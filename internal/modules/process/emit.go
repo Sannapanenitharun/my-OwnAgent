@@ -203,9 +203,16 @@ func (e *emitter) retireVanished(current map[string]struct{}) {
 		if _, still := current[name]; still {
 			continue
 		}
-		attr := platform.A(AttrExecutable, name)
+		// Retire under the SAME attributes the gauge was set with. e.with
+		// prepends the host entity attribute, so retiring with the bare
+		// executable attribute computes a different series key and deletes
+		// nothing -- silently, since removing an absent key is not an error.
+		// That is exactly how this fix failed the first time: every retirement
+		// missed on any host whose identity resolved, and the unit tests
+		// passed because their emitter had no entity.
+		attrs := e.with(platform.A(AttrExecutable, name))
 		for _, metric := range perExecutableGauges {
-			platform.RetireSeries(e.inst.telemetry, metric, attr)
+			platform.RetireSeries(e.inst.telemetry, metric, attrs...)
 		}
 	}
 	e.emitted = current
