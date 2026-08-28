@@ -441,6 +441,31 @@ func (s *linuxSource) DiscoverServices(ctx context.Context) ([]ServiceFacts, err
 // Evidence=cgroup_unit rather than service_manager, so a consumer can tell which
 // of the two proved it.
 func (s *linuxSource) mainPIDOf(dir string) (PID, bool) {
+	if pid, ok := s.lowestPIDIn(dir); ok {
+		return pid, true
+	}
+	// A unit that DELEGATES its cgroup keeps no processes in the directory
+	// systemd named after it; they live in children the unit creates itself.
+	// systemd-udevd is the ordinary example -- its workers sit in
+	// system.slice/systemd-udevd.service/udev -- and reading only the parent
+	// reported a running daemon as "unknown" with no PID. Container managers
+	// delegate the same way, and on a busy host that would be every one of
+	// them.
+	return s.lowestPIDBelow(dir, 0)
+}
+
+// cgroupWalk bounds the search below a delegated unit. A container manager's
+// cgroup subtree has one directory per container and can nest, so an unbounded
+// walk here would scale with the workload -- in the collection path, on the
+// hosts least able to afford it. The main process is at the top of that subtree
+// in every real delegation, so depth is what matters and it is small.
+const (
+	maxCgroupDepth = 3
+	maxCgroupDirs  = 64
+)
+
+// lowestPIDIn returns the lowest PID directly in one cgroup.
+func (s *linuxSource) lowestPIDIn(dir string) (PID, bool) {
 	data, err := s.readSmallFile(dir + "/cgroup.procs")
 	if err != nil {
 		return 0, false
@@ -457,6 +482,39 @@ func (s *linuxSource) mainPIDOf(dir string) (PID, bool) {
 		}
 	}
 	return best, best != 0
+}
+
+// lowestPIDBelow searches a delegated unit's child cgroups breadth-first, so a
+// process one level down is preferred over one buried three levels deeper.
+func (s *linuxSource) lowestPIDBelow(dir string, depth int) (PID, bool) {
+	if depth >= maxCgroupDepth {
+		return 0, false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, false
+	}
+	children := make([]string, 0, 8)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if len(children) >= maxCgroupDirs {
+			break
+		}
+		children = append(children, dir+"/"+e.Name())
+	}
+	for _, child := range children {
+		if pid, ok := s.lowestPIDIn(child); ok {
+			return pid, true
+		}
+	}
+	for _, child := range children {
+		if pid, ok := s.lowestPIDBelow(child, depth+1); ok {
+			return pid, true
+		}
+	}
+	return 0, false
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
