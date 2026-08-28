@@ -132,3 +132,15 @@ var (
 	_ platform.TraceSnapshotter   = (*Telemetry)(nil)
 	_ platform.EventSnapshotter   = (*Telemetry)(nil)
 )
+
+// RetireSeries implements platform.SeriesRetirer by forwarding to the inner
+// telemetry.
+//
+// A capability that every wrapper must relay is only as good as the least
+// diligent wrapper. This one sits between the exporter and the store, so
+// without this method retirement was accepted by the exporter, swallowed here,
+// and never reached the series it was meant to remove -- with nothing failing
+// to show for it. See TestEveryTelemetryWrapperForwardsRetirement.
+func (t *Telemetry) RetireSeries(name string, attrs ...platform.Attr) {
+	platform.RetireSeries(t.Inner, name, attrs...)
+}
