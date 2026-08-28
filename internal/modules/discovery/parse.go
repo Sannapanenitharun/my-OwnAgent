@@ -341,6 +341,19 @@ var pseudoFilesystems = map[string]bool{
 	"hugetlbfs": true, "mqueue": true, "fusectl": true, "configfs": true,
 	"binfmt_misc": true, "autofs": true, "rpc_pipefs": true, "nsfs": true,
 	"selinuxfs": true, "ramfs": true, "squashfs": true,
+	// overlay and tmpfs are here to AGREE WITH THE HOST MODULE, which excludes
+	// both from its filesystem metrics -- overlay by type, the tmpfs mounts by
+	// their /run and /dev prefixes. While the two lists disagreed, discovery
+	// listed 29 mounts on a container host and the metrics module measured 3,
+	// so 26 rows in the filesystems view read "not measured" forever and the
+	// three that matter were buried under 21 Docker layer overlays.
+	//
+	// Neither module is free to differ here: one says what exists and the
+	// other says how full it is, and a view has to join them. Where they
+	// disagree, the join is the thing that breaks.
+	"overlay": true, "tmpfs": true,
+	// BSD-family equivalents, excluded by the host module for the same reason.
+	"devfs": true, "nullfs": true,
 }
 
 // remoteFilesystems are network filesystems. A remote mount is a dependency on

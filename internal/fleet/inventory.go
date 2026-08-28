@@ -66,6 +66,21 @@ type InventoryItem struct {
 	Count  float64 `json:"count,omitempty"`
 }
 
+// Relation is one edge of the host's topology, with both endpoints resolved to
+// something an operator recognises. The agent ships platform entity IDs, which
+// are correct and unreadable; the names come from the entities themselves.
+type Relation struct {
+	Type     string `json:"type"`
+	From     string `json:"from"`
+	FromKind string `json:"from_kind,omitempty"`
+	To       string `json:"to"`
+	ToKind   string `json:"to_kind,omitempty"`
+	// Evidence is how the agent proved it -- a cgroup path, a listening
+	// socket, a parent PID. An edge without its evidence is an assertion.
+	Evidence string `json:"evidence,omitempty"`
+	Role     string `json:"role,omitempty"`
+}
+
 // Inventory is what runs on a host, grouped the way the drill-down shows it.
 type Inventory struct {
 	Containers  []InventoryItem `json:"containers"`
@@ -74,6 +89,7 @@ type Inventory struct {
 	Endpoints   []InventoryItem `json:"endpoints"`
 	Filesystems []InventoryItem `json:"filesystems"`
 	Other       []InventoryItem `json:"other"`
+	Topology    []Relation      `json:"topology"`
 }
 
 // entity is a discovered thing, folded from the event stream. Entities are
@@ -95,12 +111,29 @@ type entity struct {
 
 	mountpoint, device, fstype string
 	readOnly, remote           bool
+
+	// entityID is the platform-assigned identifier. Relationships reference
+	// their endpoints by it, so without it an edge cannot be named.
+	entityID string
+}
+
+// relation is one stored edge. Endpoints stay as IDs until render time,
+// because the entity they point at may arrive in a later batch than the edge.
+type relation struct {
+	kind     string
+	from, to string
+	evidence string
+	role     string
 }
 
 // ingestEventsLocked folds discovery entity events into the host's entity
 // table. The caller holds s.mu.
 func (s *Store) ingestEventsLocked(h *host, events []eventJSON) {
 	for _, ev := range events {
+		if strings.HasPrefix(ev.Name, "discovery.relationship.") {
+			s.ingestRelationLocked(h, ev)
+			continue
+		}
 		ent, key := entityFromAttrs(ev.Attributes)
 		if key == "" {
 			continue
@@ -176,6 +209,7 @@ func (s *Store) inventoryLocked(h *host) Inventory {
 	inv.Processes = append(inv.Processes, apps...)
 
 	s.joinFilesystemUsageLocked(h, inv.Filesystems)
+	inv.Topology = s.topologyLocked(h)
 
 	sortItems(inv.Containers)
 	sortItems(inv.Services)
@@ -500,6 +534,10 @@ func entityFromAttrs(attrs map[string]string) (e entity, key string) {
 		ident = name
 	}
 	e.kind, e.name, e.detail, e.id = kind, name, strings.TrimSpace(detail), containerID
+	// The platform's own identifier for this entity. Relationships reference
+	// their endpoints by it and by nothing else, so an edge is unnameable
+	// without it.
+	e.entityID = attrs["entity.target.id"]
 	return e, kind + "|" + ident
 }
 
@@ -609,6 +647,10 @@ func (s *Store) inventoryCountsLocked(h *host) map[string]int {
 			counts["other"]++
 		}
 	}
+	// Topology is counted from the rendered edges, not from the stored ones:
+	// an edge whose endpoints are not both known is not shown, so counting the
+	// table would put a number on the chip that the tab cannot produce.
+	counts["topology"] = len(s.topologyLocked(h))
 	for k, v := range counts {
 		if v == 0 {
 			delete(counts, k)
@@ -618,4 +660,86 @@ func (s *Store) inventoryCountsLocked(h *host) map[string]int {
 		return nil
 	}
 	return counts
+}
+
+// ingestRelationLocked folds one relationship event into the host's edge table.
+// The caller holds s.mu.
+func (s *Store) ingestRelationLocked(h *host, ev eventJSON) {
+	a := ev.Attributes
+	kind, from, to := a["relation"], a["from.entity.id"], a["to.entity.id"]
+	if kind == "" || from == "" || to == "" {
+		return
+	}
+	key := kind + "|" + from + "|" + to
+
+	if ev.Name == "discovery.relationship.removed" {
+		delete(h.relations, key)
+		return
+	}
+	if ev.Name != "discovery.relationship.discovered" {
+		return
+	}
+	if h.relations == nil {
+		h.relations = map[string]*relation{}
+	}
+	// Edges are bounded separately from entities so a dense process tree
+	// cannot crowd out the nodes its edges refer to.
+	if _, seen := h.relations[key]; !seen && len(h.relations) >= s.limits.RelationsPerHost {
+		h.dropped++
+		return
+	}
+	h.relations[key] = &relation{
+		kind: kind, from: from, to: to,
+		evidence: a["evidence"], role: a["role"],
+	}
+}
+
+// topologyLocked renders the edges with both endpoints named.
+//
+// An edge whose endpoints are not both known is dropped rather than shown with
+// a raw identifier. The agent resolves entity IDs before the view ever sees
+// them, so a dangling edge means the entity was shed by a cap or has not
+// arrived yet -- and "runs_service: 7f3a9c... -> 2b1e04..." tells an operator
+// strictly less than nothing.
+func (s *Store) topologyLocked(h *host) []Relation {
+	if len(h.relations) == 0 {
+		return nil
+	}
+	byID := make(map[string]*entity, len(h.entities))
+	for _, e := range h.entities {
+		if e.gone || e.entityID == "" {
+			continue
+		}
+		byID[e.entityID] = e
+	}
+
+	out := make([]Relation, 0, len(h.relations))
+	for _, r := range h.relations {
+		from, okFrom := byID[r.from]
+		to, okTo := byID[r.to]
+		if !okFrom || !okTo {
+			continue
+		}
+		out = append(out, Relation{
+			Type:     r.kind,
+			From:     from.name,
+			FromKind: from.kind,
+			To:       to.name,
+			ToKind:   to.kind,
+			Evidence: r.evidence,
+			Role:     r.role,
+		})
+	}
+	// Group by relation type, then by source, so the list reads as a topology
+	// rather than as map iteration order.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Type != out[j].Type {
+			return out[i].Type < out[j].Type
+		}
+		if out[i].From != out[j].From {
+			return out[i].From < out[j].From
+		}
+		return out[i].To < out[j].To
+	})
+	return out
 }

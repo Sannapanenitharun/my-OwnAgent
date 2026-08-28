@@ -44,6 +44,14 @@ type Settings struct {
 	// Dropped lines are counted, never silently discarded.
 	ExcludeContains []string
 
+	// DetectSeverity reads the level out of each line instead of stamping
+	// every record Info. On by default: a severity column that is always Info
+	// makes filtering and alerting inert, and the level is already in the
+	// line for klog, logfmt, JSON and syslog output. Turn it off if a format
+	// on this host is being read wrongly -- the detector is conservative, but
+	// "conservative" is not "infallible".
+	DetectSeverity bool
+
 	MaxLineBytes int
 	MaxBytesPerS int
 	MaxFiles     int
@@ -57,6 +65,7 @@ type Settings struct {
 func DefaultSettings() Settings {
 	return Settings{
 		Interval:          2 * time.Second,
+		DetectSeverity:    true,
 		CollectionTimeout: 2 * time.Second,
 		MaxLineBytes:      16 * 1024,
 		MaxBytesPerS:      256 * 1024,
@@ -94,7 +103,8 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 	known := map[string]bool{
 		"interval": true, "collection.timeout": true,
 		"paths": true, "exclude": true, "exclude.contains": true,
-		"max.line_bytes": true, "max.bytes_per_s": true,
+		"severity.detect": true,
+		"max.line_bytes":  true, "max.bytes_per_s": true,
 		"max.files": true, "max.batch": true,
 		"event_logs":    true,
 		"disable.files": true, "disable.journald": true, "disable.eventlog": true,
@@ -123,6 +133,9 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 	}
 	if v, ok := mc.Settings["exclude"]; ok {
 		s.Exclude = splitList(v)
+	}
+	if v, ok := mc.Settings["severity.detect"]; ok {
+		s.DetectSeverity = parseBool(v)
 	}
 	if v, ok := mc.Settings["exclude.contains"]; ok {
 		s.ExcludeContains = splitList(v)

@@ -214,6 +214,14 @@ func DefaultSettings() Settings {
 		// Off by default: a container host mounts hundreds of pseudo
 		// filesystems, one set per container, and none of them is storage.
 		IncludePseudoFS: false,
+		// The mountpoint prefixes the host metrics module also refuses. Type
+		// alone is not enough: a container runtime's per-container mounts live
+		// under /var/lib/docker and /var/lib/kubelet on real filesystems, so
+		// they pass a type check and still are not storage anyone manages.
+		ExcludeMounts: []string{
+			"/proc", "/sys", "/dev", "/run",
+			"/var/lib/docker/", "/var/lib/kubelet/",
+		},
 		// Off by default for the same reason: veth pairs outnumber real
 		// interfaces by two orders of magnitude on a container host.
 		IncludeVirtualIface: false,
@@ -566,4 +574,19 @@ func (s Settings) admitService(name string) bool {
 // admitMount applies the filesystem filters.
 func (s Settings) admitMount(mountpoint string) bool {
 	return !matchesAny(mountpoint, s.ExcludeMounts)
+}
+
+// AdmitsMountpoint reports whether a mount point survives the filters. It is
+// exported so the architecture tests can check that this module's filesystem
+// policy agrees with the host module's -- the two describe the same mounts from
+// different angles and the view joins them, so a disagreement produces rows
+// that can never be completed.
+func AdmitsMountpoint(s Settings, mountpoint string) bool {
+	return s.admitMount(mountpoint)
+}
+
+// AdmitsFilesystemType reports whether a filesystem type survives the filters,
+// for the same reason.
+func AdmitsFilesystemType(s Settings, fsType string) bool {
+	return s.IncludePseudoFS || !pseudoFilesystems[fsType]
 }

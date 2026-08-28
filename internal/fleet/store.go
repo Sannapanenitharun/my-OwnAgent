@@ -28,6 +28,7 @@ type Limits struct {
 	LogsPerHost      int           // recent log lines kept per host
 	SpansPerHost     int           // recent spans kept per host
 	EntitiesPerHost  int           // discovered entities kept per host
+	RelationsPerHost int           // topology edges kept per host
 	StaleAfter       time.Duration // silence before a host is reported stale
 	SeriesStaleAfter time.Duration // silence before a series is treated as gone
 }
@@ -65,6 +66,12 @@ func (l Limits) withDefaults() Limits {
 	if l.SpansPerHost <= 0 {
 		l.SpansPerHost = 100
 	}
+	// Edges outnumber nodes: a host with 400 entities had 477 relationships,
+	// most of them parent_process. Bounded separately so a dense process tree
+	// cannot crowd out the entities its edges refer to.
+	if l.RelationsPerHost <= 0 {
+		l.RelationsPerHost = 8192
+	}
 	if l.EntitiesPerHost <= 0 {
 		l.EntitiesPerHost = 4096
 	}
@@ -100,10 +107,11 @@ type host struct {
 	batchInventory int64
 	dropped        int64
 
-	series   map[string]*series
-	entities map[string]*entity
-	logs     *logRing
-	spans    *spanRing
+	series    map[string]*series
+	entities  map[string]*entity
+	relations map[string]*relation
+	logs      *logRing
+	spans     *spanRing
 }
 
 type series struct {
@@ -209,6 +217,7 @@ func (s *Store) Ingest(signal string, body []byte) error {
 			resource:  map[string]string{},
 			series:    map[string]*series{},
 			entities:  map[string]*entity{},
+			relations: map[string]*relation{},
 			logs:      newLogRing(s.limits.LogsPerHost),
 			spans:     newSpanRing(s.limits.SpansPerHost),
 		}

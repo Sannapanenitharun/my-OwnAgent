@@ -31,6 +31,12 @@ import (
 // module is allowed to retain, and no more.
 const maxInventoryEntities = 4096
 
+// maxInventoryRelations bounds the edges separately from the nodes. Sharing one
+// budget would let a host with a dense process tree crowd out the entities the
+// edges refer to, leaving the view with relationships whose endpoints it cannot
+// name.
+const maxInventoryRelations = 8192
+
 // entityRecord is one retained entity and the event that last described it.
 type entityRecord struct {
 	ev platform.Event
@@ -53,18 +59,27 @@ func (e *Exporter) foldInventory(events []platform.Event) []platform.Event {
 		e.inventory = make(map[string]*entityRecord)
 	}
 	for _, ev := range events {
-		if !strings.HasPrefix(ev.Name, "discovery.entity.") {
+		isEntity := strings.HasPrefix(ev.Name, "discovery.entity.")
+		isRelation := strings.HasPrefix(ev.Name, "discovery.relationship.")
+		if !isEntity && !isRelation {
 			continue
 		}
 		key := inventoryKey(ev)
 		if key == "" {
 			continue
 		}
-		if ev.Name == "discovery.entity.removed" {
-			delete(e.inventory, key)
+		if isRelation {
+			key = "rel|" + key
+		}
+		if ev.Name == "discovery.entity.removed" || ev.Name == "discovery.relationship.removed" {
+			if _, had := e.inventory[key]; had {
+				delete(e.inventory, key)
+				e.countInventory(isRelation, -1)
+			}
 			continue
 		}
-		if ev.Name != "discovery.entity.discovered" && ev.Name != "discovery.entity.changed" {
+		if ev.Name != "discovery.entity.discovered" && ev.Name != "discovery.entity.changed" &&
+			ev.Name != "discovery.relationship.discovered" {
 			continue
 		}
 		if rec, ok := e.inventory[key]; ok {
@@ -75,12 +90,13 @@ func (e *Exporter) foldInventory(events []platform.Event) []platform.Event {
 		}
 		// Past the cap, drop rather than grow. The agent must not turn a host
 		// churning through short-lived entities into unbounded memory.
-		if len(e.inventory) >= maxInventoryEntities {
+		if e.atInventoryCap(isRelation) {
 			e.droppedInventory++
 			continue
 		}
 		e.invSeq++
 		e.inventory[key] = &entityRecord{ev: ev, seq: e.invSeq}
+		e.countInventory(isRelation, 1)
 	}
 
 	out := make([]*entityRecord, 0, len(e.inventory))
@@ -112,6 +128,11 @@ func inventoryKey(ev platform.Event) string {
 	attrs := make(map[string]string, len(ev.Attrs))
 	for _, a := range ev.Attrs {
 		attrs[a.Key] = a.Value
+	}
+	// A relationship is identified by its endpoints and its type, not by an
+	// entity id -- it has two of those and is neither.
+	if rel := attrs["relation"]; rel != "" && attrs["from.entity.id"] != "" {
+		return rel + "|" + attrs["from.entity.id"] + "|" + attrs["to.entity.id"]
 	}
 	if id := attrs["entity.target.id"]; id != "" {
 		return id
@@ -149,4 +170,27 @@ func inventoryKey(ev platform.Event) string {
 		}
 		return kind + "|" + name
 	}
+}
+
+// atInventoryCap reports whether the table is full for the kind of record
+// being added. Nodes and edges are counted separately so a dense process tree
+// cannot crowd out the entities its edges refer to.
+//
+// The counts are maintained rather than computed: this is asked once per new
+// record per cycle, and counting the map each time would make a cycle
+// quadratic in the size of the inventory, in the collection path.
+func (e *Exporter) atInventoryCap(isRelation bool) bool {
+	if isRelation {
+		return e.invEdges >= maxInventoryRelations
+	}
+	return e.invNodes >= maxInventoryEntities
+}
+
+// countInventory keeps the node and edge tallies in step with the table.
+func (e *Exporter) countInventory(isRelation bool, delta int) {
+	if isRelation {
+		e.invEdges += delta
+		return
+	}
+	e.invNodes += delta
 }

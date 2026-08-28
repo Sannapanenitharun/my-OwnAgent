@@ -484,3 +484,174 @@ func TestHostIDInResourceAttributesIsEnough(t *testing.T) {
 		t.Error("host not recorded from its resource attributes")
 	}
 }
+
+func relBody(host, name, attrs string) []byte {
+	return []byte(`{"schema":"obsagent.v1","signal":"inventory","host":"` + host +
+		`","events":[{"name":"` + name + `","timestamp":"","attributes":{` + attrs + `}}]}`)
+}
+
+func TestTopologyNamesBothEndpoints(t *testing.T) {
+	// The agent ships edges as platform entity IDs, which are correct and
+	// unreadable. The view has to resolve them or the tab says nothing.
+	s := New(Limits{})
+	for _, a := range []string{
+		`"entity.kind":"process","name":"sshd","pid":"1122415","entity.target.id":"p-1"`,
+		`"entity.kind":"service","name":"ssh.service","state":"running","entity.target.id":"s-1"`,
+	} {
+		if err := s.Ingest("inventory", entityBody("h", "discovery.entity.discovered", a)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Ingest("inventory", relBody("h", "discovery.relationship.discovered",
+		`"relation":"runs_service","from.entity.id":"p-1","to.entity.id":"s-1","evidence":"cgroup_unit"`)); err != nil {
+		t.Fatal(err)
+	}
+
+	d, _ := s.Host("h")
+	if len(d.Inventory.Topology) != 1 {
+		t.Fatalf("topology = %d edges, want 1", len(d.Inventory.Topology))
+	}
+	r := d.Inventory.Topology[0]
+	if r.From != "sshd" || r.To != "ssh.service" {
+		t.Errorf("edge = %q -> %q, want sshd -> ssh.service", r.From, r.To)
+	}
+	if r.FromKind != "process" || r.ToKind != "service" {
+		t.Errorf("kinds = %q/%q", r.FromKind, r.ToKind)
+	}
+	if r.Evidence != "cgroup_unit" {
+		t.Errorf("evidence = %q; an edge without it is an assertion", r.Evidence)
+	}
+	if d.InvCounts["topology"] != 1 {
+		t.Errorf("chip says %d, want 1", d.InvCounts["topology"])
+	}
+}
+
+func TestDanglingEdgeIsNotShown(t *testing.T) {
+	// An edge whose endpoints are unknown would render as
+	// "runs_service: 7f3a9c... -> 2b1e04...", which tells an operator less
+	// than nothing. The chip must agree with the table.
+	s := New(Limits{})
+	if err := s.Ingest("inventory", relBody("h", "discovery.relationship.discovered",
+		`"relation":"runs_service","from.entity.id":"ghost-1","to.entity.id":"ghost-2"`)); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := s.Host("h")
+	if len(d.Inventory.Topology) != 0 {
+		t.Errorf("topology = %+v, want nothing renderable", d.Inventory.Topology)
+	}
+	if n := d.InvCounts["topology"]; n != 0 {
+		t.Errorf("chip says %d over an empty table", n)
+	}
+}
+
+func TestEdgeAppearsOnceItsEndpointsArrive(t *testing.T) {
+	// Edges and entities arrive in the same batch but not in a guaranteed
+	// order, and an edge can precede its endpoints across batches. It must not
+	// be discarded for being early.
+	s := New(Limits{})
+	if err := s.Ingest("inventory", relBody("h", "discovery.relationship.discovered",
+		`"relation":"endpoint_owned_by","from.entity.id":"e-1","to.entity.id":"p-1"`)); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := s.Host("h"); len(d.Inventory.Topology) != 0 {
+		t.Fatal("an edge rendered before its endpoints were known")
+	}
+	for _, a := range []string{
+		`"entity.kind":"network_endpoint","protocol":"tcp","address":"0.0.0.0","port":"22","entity.target.id":"e-1"`,
+		`"entity.kind":"process","name":"sshd","pid":"7","entity.target.id":"p-1"`,
+	} {
+		if err := s.Ingest("inventory", entityBody("h", "discovery.entity.discovered", a)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, _ := s.Host("h")
+	if len(d.Inventory.Topology) != 1 {
+		t.Fatalf("topology = %d, want the edge to appear once resolvable", len(d.Inventory.Topology))
+	}
+	if got := d.Inventory.Topology[0].From; got != "0.0.0.0:22" {
+		t.Errorf("from = %q, want the endpoint", got)
+	}
+}
+
+func TestRemovedRelationshipDisappears(t *testing.T) {
+	s := New(Limits{})
+	for _, a := range []string{
+		`"entity.kind":"process","name":"sshd","pid":"7","entity.target.id":"p-1"`,
+		`"entity.kind":"service","name":"ssh.service","entity.target.id":"s-1"`,
+	} {
+		if err := s.Ingest("inventory", entityBody("h", "discovery.entity.discovered", a)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	attrs := `"relation":"runs_service","from.entity.id":"p-1","to.entity.id":"s-1"`
+	if err := s.Ingest("inventory", relBody("h", "discovery.relationship.discovered", attrs)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ingest("inventory", relBody("h", "discovery.relationship.removed", attrs)); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := s.Host("h"); len(d.Inventory.Topology) != 0 {
+		t.Error("a removed relationship is still reported")
+	}
+}
+
+func TestRepeatedEdgeIsNotDuplicated(t *testing.T) {
+	// The agent re-sends its retained set every cycle.
+	s := New(Limits{})
+	for _, a := range []string{
+		`"entity.kind":"process","name":"sshd","pid":"7","entity.target.id":"p-1"`,
+		`"entity.kind":"service","name":"ssh.service","entity.target.id":"s-1"`,
+	} {
+		if err := s.Ingest("inventory", entityBody("h", "discovery.entity.discovered", a)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 6; i++ {
+		if err := s.Ingest("inventory", relBody("h", "discovery.relationship.discovered",
+			`"relation":"runs_service","from.entity.id":"p-1","to.entity.id":"s-1"`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, _ := s.Host("h")
+	if len(d.Inventory.Topology) != 1 {
+		t.Errorf("topology = %d, want 1: a repeat is the same edge", len(d.Inventory.Topology))
+	}
+}
+
+func TestEdgesAreBoundedSeparatelyFromEntities(t *testing.T) {
+	// Edges outnumber nodes -- 477 against 395 on the measured host. A shared
+	// budget would let a dense process tree crowd out the entities its edges
+	// refer to, leaving edges that can never be named.
+	s := New(Limits{EntitiesPerHost: 4, RelationsPerHost: 2})
+	for _, a := range []string{
+		`"entity.kind":"process","name":"a","pid":"1","entity.target.id":"p-1"`,
+		`"entity.kind":"process","name":"b","pid":"2","entity.target.id":"p-2"`,
+	} {
+		if err := s.Ingest("inventory", entityBody("h", "discovery.entity.discovered", a)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		if err := s.Ingest("inventory", relBody("h", "discovery.relationship.discovered",
+			`"relation":"parent_process","from.entity.id":"p-1","to.entity.id":"p-`+itoa(i)+`"`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d, _ := s.Host("h")
+	// Both entities survive: the edge flood did not evict them.
+	if n := len(d.Inventory.Processes); n != 2 {
+		t.Errorf("processes = %d, want 2: edges must not evict nodes", n)
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
+}

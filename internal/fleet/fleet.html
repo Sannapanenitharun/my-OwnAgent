@@ -167,6 +167,7 @@
           <button type="button" class="chip" data-inv="processes">Applications</button>
           <button type="button" class="chip" data-inv="endpoints">Endpoints</button>
           <button type="button" class="chip" data-inv="filesystems">Filesystems</button>
+          <button type="button" class="chip" data-inv="topology">Topology</button>
           <button type="button" class="chip" data-inv="other">Other</button>
         </div>
         <p class="hint" id="inv-count"></p>
@@ -572,7 +573,7 @@ function renderLogs() {
         var o = originOf(l);
         var cls = o.kind === "container" ? "blue" : "";
         return "<tr><td>" + esc(new Date(l.time).toLocaleTimeString()) + "</td>" +
-          "<td>" + (l.stream ? esc(l.stream) : esc(l.status || "-")) + "</td>" +
+          "<td>" + severityPill(l.status, l.stream) + "</td>" +
           '<td><span class="pill ' + cls + '" title="' + esc(o.title || o.label) + '">' +
           esc(o.label) + "</span></td>" +
           '<td class="mono">' + esc(l.message) + "</td></tr>";
@@ -672,7 +673,7 @@ function openInventory() {
 // applications sit populated one click away. Open on a tab that has data.
 function selectFirstPopulatedInvTab() {
   var inv = (detail && detail.inventory) || {};
-  var order = ["containers", "services", "processes", "endpoints", "filesystems", "other"];
+  var order = ["containers", "services", "processes", "endpoints", "filesystems", "topology", "other"];
   for (var i = 0; i < order.length; i++) {
     if ((inv[order[i]] || []).length > 0) { invTab = order[i]; break; }
   }
@@ -811,6 +812,21 @@ function renderInvTable(list) {
     return;
   }
 
+  if (invTab === "topology") {
+    // The edges, not the nodes: what owns a port, what runs in which container,
+    // which process a service is. Both endpoints are named by the intake --
+    // the agent ships entity IDs, and an edge shown as
+    // "runs_service: 7f3a9c -> 2b1e04" would be worse than no edge at all.
+    head.innerHTML = "<tr><th>Relation</th><th>From</th><th>To</th><th>Proved by</th></tr>";
+    body.innerHTML = list.map(function (it) {
+      return '<tr><td class="mono">' + esc(it.type) + "</td>" +
+        '<td class="mono">' + esc(it.from) + kindTag(it.from_kind) + "</td>" +
+        '<td class="mono">' + esc(it.to) + kindTag(it.to_kind) + "</td>" +
+        '<td class="mono" style="color:var(--muted)">' + esc(it.evidence || "-") + "</td></tr>";
+    }).join("");
+    return;
+  }
+
   if (invTab === "filesystems") {
     // `df -h`, with the bar because "94%" and "94% of 8GB" are different
     // levels of alarm.
@@ -841,6 +857,25 @@ function renderInvTable(list) {
     return '<tr><td class="mono">' + esc(it.name) + "</td><td>" + esc(it.kind || invTab) +
       '</td><td class="mono">' + esc(it.detail || "-") + "</td></tr>";
   }).join("");
+}
+
+// Severity is read from the line by the agent. Until it was, every record
+// arrived "info" and this column showed the stdout/stderr stream instead --
+// which is where the line came from, not how bad it is. The stream survives as
+// the tooltip, since for a container it is still the only other signal.
+function severityPill(status, stream) {
+  var sev = (status || "").toLowerCase();
+  var cls = sev === "error" ? "bad" : sev === "warn" ? "warn" : sev === "debug" ? "" : "ok";
+  var label = sev || "-";
+  var title = stream ? "stream: " + stream : "";
+  return '<span class="pill ' + cls + '" title="' + esc(title) + '">' + esc(label) + "</span>";
+}
+
+// The kind is what disambiguates two endpoints that share a name -- a service
+// and the process running it are usually called nearly the same thing.
+function kindTag(kind) {
+  if (!kind) return "";
+  return ' <span class="pill" style="margin-left:6px">' + esc(kind) + "</span>";
 }
 
 // A failed service is the row an operator is looking for, so it must not be
@@ -900,7 +935,7 @@ var TITLES = {
   traces: ["Traces", "Spans received by this intake"],
   modules: ["Modules", "Agent module state, from shipped telemetry"],
   overview: ["Overview", "Fleet totals and what this intake retains"],
-  inventory: ["Host inventory", "Containers, services, applications, endpoints and mounts on this host"]
+  inventory: ["Host inventory", "Containers, services, applications, endpoints, mounts and topology on this host"]
 };
 
 function render() {

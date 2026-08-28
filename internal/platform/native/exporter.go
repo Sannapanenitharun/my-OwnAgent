@@ -66,6 +66,8 @@ type Exporter struct {
 	// buffer rather than read out of it, because an inventory is a set and
 	// that buffer is a fixed-size ring; see inventory.go.
 	inventory        map[string]*entityRecord
+	invNodes         int
+	invEdges         int
 	invSeq           int64
 	droppedInventory int64
 

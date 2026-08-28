@@ -61,6 +61,7 @@ type sourceStatus struct {
 
 type instruments struct {
 	lines, dropped, redacted, truncated, success, failure platform.Counter
+	leveled                                               platform.Counter
 	duration                                              platform.Histogram
 	health                                                platform.Gauge
 	tel                                                   platform.Telemetry
@@ -71,6 +72,7 @@ func newInstruments(t platform.Telemetry) *instruments {
 		lines:     t.Counter(MetricLines),
 		dropped:   t.Counter(MetricDropped),
 		redacted:  t.Counter(MetricRedacted),
+		leveled:   t.Counter(MetricLeveled),
 		truncated: t.Counter(MetricTruncated),
 		success:   t.Counter(MetricCollectionSuccess),
 		failure:   t.Counter(MetricCollectionFailure),
@@ -365,9 +367,20 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 		if entity != "" {
 			attrs = append(attrs, platform.A("entity.id", entity))
 		}
+		// The level is read from the line as it was COLLECTED, not from the
+		// redacted copy: scrubbing can rewrite the head of a line, and a
+		// severity that depends on whether a credential happened to appear
+		// would be unreproducible.
+		severity := platform.SeverityInfo
+		if s.DetectSeverity {
+			if sev, found := detectSeverity(body); found {
+				severity = sev
+				m.inst.leveled.Add(1, srcAttr, platform.A("severity", sev.String()))
+			}
+		}
 		m.inst.tel.EmitLog(platform.LogRecord{
 			Timestamp: m.host.Clock.Now(),
-			Severity:  platform.SeverityInfo,
+			Severity:  severity,
 			Body:      redacted,
 			Attrs:     attrs,
 		})

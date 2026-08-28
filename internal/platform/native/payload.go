@@ -289,7 +289,13 @@ func mustJSON(v envelope) []byte {
 func encodeInventory(resource []platform.Attr, events []platform.Event, now time.Time) []byte {
 	out := make([]eventJSON, 0, len(events))
 	for _, ev := range events {
-		if !strings.HasPrefix(ev.Name, "discovery.entity.") {
+		// Entities AND relationships. An inventory of things with no edges
+		// between them cannot answer the questions an operator actually has --
+		// what is listening on that port, which container is that process in.
+		// The topology was computed on every host, every cycle, and thrown
+		// away here.
+		if !strings.HasPrefix(ev.Name, "discovery.entity.") &&
+			!strings.HasPrefix(ev.Name, "discovery.relationship.") {
 			continue
 		}
 		ts := ev.Timestamp
