@@ -454,3 +454,33 @@ func TestChartedSeriesAreNeverPruned(t *testing.T) {
 		t.Error("the charted host.* series was pruned to make room for a process")
 	}
 }
+
+func TestUnidentifiedBatchIsRefusedNotMerged(t *testing.T) {
+	// Filing unidentified batches under a shared name merges every agent that
+	// failed identity resolution into one row, mixing the metrics of unrelated
+	// machines -- and the more agents are broken, the more convincing that row
+	// looks.
+	s := New(Limits{})
+	body := `{"schema":"obsagent.v1","signal":"metrics","metrics":{"gauges":[
+	  {"name":"host.cpu.utilization","value":0.9,"attributes":{"state":"busy"}}]}}`
+	if err := s.Ingest("metrics", []byte(body)); err == nil {
+		t.Fatal("an unidentified batch was accepted")
+	}
+	if hosts := s.Fleet(); len(hosts.Hosts) != 0 {
+		t.Errorf("hosts = %d, want none: there is no host to attribute this to", len(hosts.Hosts))
+	}
+}
+
+func TestHostIDInResourceAttributesIsEnough(t *testing.T) {
+	// The envelope's host field is the usual carrier, but an agent that puts
+	// its identity only in the resource attributes is identified all the same.
+	s := New(Limits{})
+	body := `{"schema":"obsagent.v1","signal":"metrics","resource":{"host.id":"teleport"},"metrics":{"gauges":[
+	  {"name":"host.cpu.utilization","value":0.9,"attributes":{"state":"busy"}}]}}`
+	if err := s.Ingest("metrics", []byte(body)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if _, ok := s.Host("teleport"); !ok {
+		t.Error("host not recorded from its resource attributes")
+	}
+}

@@ -12,6 +12,7 @@ package fleet
 
 import (
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -184,7 +185,16 @@ func (s *Store) Ingest(signal string, body []byte) error {
 		name = strings.TrimSpace(env.Resource["host.id"])
 	}
 	if name == "" {
-		name = "unknown"
+		// Filing this under a shared name like "unknown" would MERGE every
+		// agent that failed identity resolution into one row, silently mixing
+		// the metrics of unrelated machines into a single incoherent host --
+		// and the more agents are misconfigured, the more convincing the row
+		// looks. Refusing is the honest answer. The caller still archives the
+		// batch, so nothing is lost, and the reason is logged rather than
+		// rendered as a fake host.
+		return errors.New("batch has no host id: the agent could not resolve " +
+			"one, so set OBSAGENT_HOST_ID or run it where instance metadata " +
+			"is reachable")
 	}
 
 	s.mu.Lock()
