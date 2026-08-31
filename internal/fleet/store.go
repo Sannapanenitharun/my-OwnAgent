@@ -337,9 +337,22 @@ func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time) {
 }
 
 // isChartable reports whether a metric earns a sample ring.
+//
+// The container list is exact rather than a prefix. container.instance.* also
+// holds the cumulative network counters, and those are shown as totals, not
+// drawn: giving them rings would spend two history slots per container on
+// charts nothing renders, which is the same waste the process.* exclusion
+// exists to avoid. A rising cumulative line is a poor chart in any case --
+// the useful form is a rate, and that is not what is stored here.
 func isChartable(name string) bool {
-	return strings.HasPrefix(name, "host.") ||
-		strings.HasPrefix(name, "container.instance.")
+	if strings.HasPrefix(name, "host.") {
+		return true
+	}
+	switch name {
+	case "container.instance.memory_bytes", "container.instance.cpu_utilization":
+		return true
+	}
+	return false
 }
 
 // evictLocked drops the least recently seen host once the cap is reached.

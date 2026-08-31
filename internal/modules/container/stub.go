@@ -13,4 +13,5 @@ type sample struct {
 	Runtime     string
 	MemoryBytes int64
 	CPUUtil     float64
+	Net         netCounters
 }

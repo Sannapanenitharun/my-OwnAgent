@@ -41,6 +41,13 @@ const (
 	MetricInstanceMemory = "container.instance.memory_bytes"
 	MetricInstanceCPU    = "container.instance.cpu_utilization"
 
+	// Network is cumulative, so these are counters rather than gauges. The
+	// kernel's interface counters restart when a container does, and a
+	// counter is the shape that says "this many bytes since I started
+	// watching" without a restart reading as negative traffic.
+	MetricInstanceNetRx = "container.instance.network.rx_bytes"
+	MetricInstanceNetTx = "container.instance.network.tx_bytes"
+
 	MetricCycleOK   = "container.cycle.success"
 	MetricCycleFail = "container.cycle.failure"
 )
@@ -55,8 +62,12 @@ type Module struct {
 	// emittedIDs is the set of containers whose series were set last cycle,
 	// so the ones that have since stopped can be withdrawn.
 	emittedIDs map[string]struct{}
-	lastErr    string
-	cycles     int64
+	// lastNet holds the previous cumulative interface counters per container,
+	// which is what turns them into per-cycle traffic. Entries are dropped
+	// when the container's series are retired.
+	lastNet map[string]netCounters
+	lastErr string
+	cycles  int64
 
 	host   module.Host
 	cancel context.CancelFunc
@@ -238,6 +249,7 @@ func (m *Module) emitPerContainer(h module.Host, samples []sample) {
 		if s.CPUUtil >= 0 {
 			cpu.Set(s.CPUUtil, attr)
 		}
+		m.emitNetDelta(h, s, attr)
 	}
 
 	m.mu.Lock()
@@ -252,5 +264,48 @@ func (m *Module) emitPerContainer(h module.Host, samples []sample) {
 		attr := platform.A(AttrContainerID, id)
 		platform.RetireSeries(h.Telemetry, MetricInstanceMemory, attr)
 		platform.RetireSeries(h.Telemetry, MetricInstanceCPU, attr)
+		platform.RetireSeries(h.Telemetry, MetricInstanceNetRx, attr)
+		platform.RetireSeries(h.Telemetry, MetricInstanceNetTx, attr)
+
+		m.mu.Lock()
+		delete(m.lastNet, id)
+		m.mu.Unlock()
+	}
+}
+
+// emitNetDelta publishes the traffic since the previous cycle.
+//
+// The kernel counter is cumulative within one network namespace, and a
+// container that restarts gets a new namespace starting from zero. A drop
+// below the previous reading is therefore a restart, not negative traffic:
+// the correct response is to re-baseline and publish nothing for that cycle,
+// because the bytes between the two readings were sent by a container that no
+// longer exists.
+func (m *Module) emitNetDelta(h module.Host, s sample, attr platform.Attr) {
+	if !s.Net.OK {
+		// Host-networked, or no readable process. Absent rather than zero:
+		// zero would claim the container sent nothing, which is a measurement
+		// this module did not make.
+		return
+	}
+	m.mu.Lock()
+	if m.lastNet == nil {
+		m.lastNet = map[string]netCounters{}
+	}
+	prev, seen := m.lastNet[s.ShortID]
+	m.lastNet[s.ShortID] = s.Net
+	m.mu.Unlock()
+
+	if !seen {
+		// First sighting establishes the baseline. Publishing the counter's
+		// absolute value here would report the container's whole lifetime as
+		// one cycle's traffic.
+		return
+	}
+	if s.Net.RxBytes >= prev.RxBytes {
+		h.Telemetry.Counter(MetricInstanceNetRx).Add(int64(s.Net.RxBytes-prev.RxBytes), attr)
+	}
+	if s.Net.TxBytes >= prev.TxBytes {
+		h.Telemetry.Counter(MetricInstanceNetTx).Add(int64(s.Net.TxBytes-prev.TxBytes), attr)
 	}
 }

@@ -63,7 +63,12 @@ type InventoryItem struct {
 
 	CPU    float64 `json:"cpu,omitempty"`
 	Memory float64 `json:"memory,omitempty"`
-	Count  float64 `json:"count,omitempty"`
+	// NetRx and NetTx are traffic in the container's OWN network namespace,
+	// and are absent rather than zero where it shares the host's -- a
+	// host-networked container has no traffic of its own to report.
+	NetRx float64 `json:"net_rx,omitempty"`
+	NetTx float64 `json:"net_tx,omitempty"`
+	Count float64 `json:"count,omitempty"`
 }
 
 // Relation is one edge of the host's topology, with both endpoints resolved to
@@ -757,7 +762,7 @@ func (s *Store) joinContainerUsageLocked(h *host, containers []InventoryItem) {
 	if len(containers) == 0 {
 		return
 	}
-	type usage struct{ cpu, mem float64 }
+	type usage struct{ cpu, mem, rx, tx float64 }
 	byID := map[string]*usage{}
 	for _, ser := range h.series {
 		if !strings.HasPrefix(ser.name, "container.instance.") || ser.attrs == nil {
@@ -780,6 +785,10 @@ func (s *Store) joinContainerUsageLocked(h *host, containers []InventoryItem) {
 			u.mem = ser.value
 		case "container.instance.cpu_utilization":
 			u.cpu = ser.value
+		case "container.instance.network.rx_bytes":
+			u.rx = ser.value
+		case "container.instance.network.tx_bytes":
+			u.tx = ser.value
 		}
 	}
 	if len(byID) == 0 {
@@ -803,5 +812,6 @@ func (s *Store) joinContainerUsageLocked(h *host, containers []InventoryItem) {
 			continue
 		}
 		containers[i].CPU, containers[i].Memory = u.cpu, u.mem
+		containers[i].NetRx, containers[i].NetTx = u.rx, u.tx
 	}
 }

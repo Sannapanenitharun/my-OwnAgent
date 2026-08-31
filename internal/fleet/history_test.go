@@ -145,3 +145,87 @@ func TestHistoryCapIsEnforced(t *testing.T) {
 		t.Errorf("historySeries = %d but %d series actually hold history", count, charted)
 	}
 }
+
+// TestNetworkCountersAreNotCharted. They are shown as totals, never drawn, so
+// a ring for each would spend two history slots per container on a chart that
+// does not exist -- the same waste process.* is excluded for.
+func TestNetworkCountersAreNotCharted(t *testing.T) {
+	s := New(Limits{})
+	for i := 0; i < 4; i++ {
+		if err := s.Ingest("metrics", containerMetrics("h1", "container.instance.network.rx_bytes", "abc", float64(i))); err != nil {
+			t.Fatalf("Ingest: %v", err)
+		}
+	}
+	d, _ := s.Host("h1")
+	m, ok := seriesNamed(d, "container.instance.network.rx_bytes")
+	if !ok {
+		t.Fatal("the network series was not stored at all; it should be, just not charted")
+	}
+	if len(m.History) > 0 {
+		t.Errorf("network counter kept %d history points", len(m.History))
+	}
+	if m.Value != 3 {
+		t.Errorf("value = %v, want the latest reading", m.Value)
+	}
+}
+
+// TestNetworkJoinsOntoTheContainerRow. The metric is keyed on the container id
+// and the row is built from discovery events; if the two do not meet, the
+// column reads "-" on a container that is in fact measured.
+func TestNetworkJoinsOntoTheContainerRow(t *testing.T) {
+	s := New(Limits{})
+	ev := `{"schema":"obsagent.v1","signal":"inventory","host":"h1","resource":{"host.id":"h1"},"events":[
+		{"name":"discovery.entity.discovered","timestamp":"2026-01-01T00:00:00Z","attributes":{
+			"entity.kind":"container","container_id":"abc123def456","name":"web","image":"nginx"}}]}`
+	if err := s.Ingest("inventory", []byte(ev)); err != nil {
+		t.Fatalf("Ingest inventory: %v", err)
+	}
+	for _, m := range []struct {
+		name string
+		v    float64
+	}{
+		{"container.instance.network.rx_bytes", 4096},
+		{"container.instance.network.tx_bytes", 2048},
+		{"container.instance.memory_bytes", 999},
+	} {
+		if err := s.Ingest("metrics", containerMetrics("h1", m.name, "abc123def456", m.v)); err != nil {
+			t.Fatalf("Ingest %s: %v", m.name, err)
+		}
+	}
+
+	d, _ := s.Host("h1")
+	if len(d.Inventory.Containers) != 1 {
+		t.Fatalf("containers = %d, want 1", len(d.Inventory.Containers))
+	}
+	c := d.Inventory.Containers[0]
+	if c.NetRx != 4096 || c.NetTx != 2048 {
+		t.Errorf("net rx/tx = %v/%v, want 4096/2048", c.NetRx, c.NetTx)
+	}
+	if c.Memory != 999 {
+		t.Errorf("memory = %v, want the join to still carry it", c.Memory)
+	}
+}
+
+// TestUnmeasuredNetworkLeavesTheRowBlank. Absent is not zero: a
+// host-networked container has no traffic of its own, and 0 B would claim it
+// sent nothing.
+func TestUnmeasuredNetworkLeavesTheRowBlank(t *testing.T) {
+	s := New(Limits{})
+	ev := `{"schema":"obsagent.v1","signal":"inventory","host":"h1","resource":{"host.id":"h1"},"events":[
+		{"name":"discovery.entity.discovered","timestamp":"2026-01-01T00:00:00Z","attributes":{
+			"entity.kind":"container","container_id":"hostnet00000","name":"hostnet"}}]}`
+	if err := s.Ingest("inventory", []byte(ev)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if err := s.Ingest("metrics", containerMetrics("h1", "container.instance.memory_bytes", "hostnet00000", 512)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	d, _ := s.Host("h1")
+	c := d.Inventory.Containers[0]
+	if c.NetRx != 0 || c.NetTx != 0 {
+		t.Errorf("net = %v/%v, want zero-value so the view renders it as not measured", c.NetRx, c.NetTx)
+	}
+	if c.Memory != 512 {
+		t.Error("memory was lost for a container with no network measurement")
+	}
+}

@@ -16,6 +16,10 @@ type sample struct {
 	Runtime     string
 	MemoryBytes int64
 	CPUUtil     float64 // -1 when unknown
+	// Net is cumulative interface traffic in the container's own network
+	// namespace. Not OK where the container shares the host's namespace, or
+	// where no process in it could be read.
+	Net netCounters
 }
 
 func supported() bool { return true }
@@ -76,6 +80,7 @@ func readSamples(max int) ([]sample, error) {
 			Runtime:     rt,
 			MemoryBytes: max64(0, mem),
 			CPUUtil:     cpu,
+			Net:         readContainerNet(dir),
 		})
 	}
 	return out, nil
@@ -184,4 +189,70 @@ func max64(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+// readContainerNet reads the container's own interface counters.
+//
+// It needs one pid inside the container, which the cgroup already lists. Any
+// of them will do: every process in a container shares its network namespace,
+// so they all render the same /proc/<pid>/net/dev.
+func readContainerNet(cgroupDir string) netCounters {
+	hostNS := readLink("/proc/self/ns/net")
+	for _, pid := range cgroupPIDs(cgroupDir, maxPIDProbes) {
+		// A container on host networking shares the host's namespace. Its
+		// counters are the machine's, and reporting them per container would
+		// restate host.network.* under a container id.
+		if ns := readLink("/proc/" + pid + "/ns/net"); ns != "" && ns == hostNS {
+			return netCounters{}
+		}
+		b, err := os.ReadFile("/proc/" + pid + "/net/dev")
+		if err != nil {
+			// The process exited between listing and reading, or procfs is
+			// restricted for it. Try the next one rather than giving up: on a
+			// busy container the first pid is often the one that just died.
+			continue
+		}
+		if n := parseNetDev(string(b)); n.OK {
+			return n
+		}
+	}
+	return netCounters{}
+}
+
+// maxPIDProbes bounds the retry above. A container whose every process is
+// unreadable is not going to become readable on the twentieth attempt, and
+// this runs once per container per cycle.
+const maxPIDProbes = 4
+
+// cgroupPIDs lists processes in a cgroup, newest first is not needed -- any
+// member will do -- so it stops as soon as it has enough to try.
+func cgroupPIDs(dir string, limit int) []string {
+	b, err := os.ReadFile(filepath.Join(dir, "cgroup.procs"))
+	if err != nil {
+		// cgroup v1 splits the same information across controllers.
+		b, err = os.ReadFile(filepath.Join(dir, "tasks"))
+		if err != nil {
+			return nil
+		}
+	}
+	out := make([]string, 0, limit)
+	for _, line := range strings.Split(string(b), "\n") {
+		pid := strings.TrimSpace(line)
+		if pid == "" {
+			continue
+		}
+		out = append(out, pid)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func readLink(path string) string {
+	s, err := os.Readlink(path)
+	if err != nil {
+		return ""
+	}
+	return s
 }

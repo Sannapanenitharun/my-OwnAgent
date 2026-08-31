@@ -806,6 +806,8 @@ function renderContainerDrawer(it) {
 
   var cpu = cdSeries("container.instance.cpu_utilization", it.id);
   var mem = cdSeries("container.instance.memory_bytes", it.id);
+  var rx = cdSeries("container.instance.network.rx_bytes", it.id);
+  var tx = cdSeries("container.instance.network.tx_bytes", it.id);
 
   var html = "";
 
@@ -813,7 +815,9 @@ function renderContainerDrawer(it) {
   // operator reads out loud.
   html += '<section class="cd-sec"><h4>Resource use</h4><div class="cd-stat">' +
     '<div><div class="n">' + (cpu ? (cpu.value * 100).toFixed(1) + "%" : "—") + '</div><div class="l">CPU</div></div>' +
-    '<div><div class="n">' + (mem ? bytes(mem.value) : "—") + '</div><div class="l">Memory</div></div></div>';
+    '<div><div class="n">' + (mem ? bytes(mem.value) : "—") + '</div><div class="l">Memory</div></div>' +
+    '<div><div class="n">' + (rx ? bytes(rx.value) : "—") + '</div><div class="l">Net in</div></div>' +
+    '<div><div class="n">' + (tx ? bytes(tx.value) : "—") + '</div><div class="l">Net out</div></div></div>';
 
   // A chart is drawn only where there is a series to draw. An empty axis
   // reads as "zero", which is a different claim from "not measured".
@@ -823,6 +827,10 @@ function renderContainerDrawer(it) {
     html += '<p class="cd-empty">No per-container metrics for this container. The ' +
       "container module reports them only where the runtime exposes per-container " +
       "CPU and memory.</p>";
+  } else if (!rx && !tx) {
+    html += '<p class="cd-empty">Network not measured. A container sharing the ' +
+      "host's network namespace has no traffic of its own to report — its packets " +
+      "are counted in the host's interfaces.</p>";
   }
   html += "</section>";
 
@@ -930,7 +938,7 @@ function renderInvTable(list) {
     // because a terminal is only as wide as it is; in a table the two
     // identifiers belong together, and the name is what an operator scans for.
     head.innerHTML = "<tr><th>Container ID</th><th>Name</th><th>Image</th><th>CPU</th>" +
-      "<th>Memory</th><th>Created</th><th>Status</th><th>Ports</th></tr>";
+      "<th>Memory</th><th>Network</th><th>Created</th><th>Status</th><th>Ports</th></tr>";
     body.innerHTML = list.map(function (it) {
       // Status is the live one ("Up 28 hours"); state ("running", "exited") is
       // the fallback for an agent that reported only the coarse value.
@@ -944,6 +952,7 @@ function renderInvTable(list) {
         '<td class="mono">' + esc(it.image || "-") + "</td>" +
         '<td class="mono">' + (it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "-") + "</td>" +
         '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td>" +
+        '<td class="mono" style="white-space:nowrap">' + netCell(it) + "</td>" +
         '<td class="mono" style="color:var(--muted); white-space:nowrap">' + esc(ago(it.created)) + "</td>" +
         "<td>" + statusCell + "</td>" +
         '<td class="mono">' + esc(it.ports || "-") + "</td></tr>";
@@ -1091,6 +1100,17 @@ function serviceTone(state) {
   if (/^(running|active)/i.test(state)) return "ok";
   if (/^(failed|error)/i.test(state)) return "bad";
   return "warn";
+}
+
+// netCell renders a container's traffic in and out.
+//
+// A dash means not measured, not zero. A container sharing the host's network
+// namespace has no traffic of its own -- its packets are already counted in
+// host.network.* -- and printing 0 B there would claim it sent nothing.
+function netCell(it) {
+  if (!it.net_rx && !it.net_tx) return '<span style="color:var(--muted)">-</span>';
+  return '<span title="received">↓' + bytes(it.net_rx || 0) + "</span> " +
+    '<span title="transmitted" style="color:var(--muted)">↑' + bytes(it.net_tx || 0) + "</span>";
 }
 
 // Docker shows the first 12 characters of a container ID, which is the length
