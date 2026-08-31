@@ -34,6 +34,38 @@
     header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
     h1 { margin: 0; font-size: 18px; font-weight: 650; }
     .sub { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    /* Topology graph. Containment reads left to right, one column per kind,
+       because that is the question the edges answer: what contains what. A
+       force-directed blob would look livelier and say less. */
+    .topo-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+      padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .topo-bar input[type=search] { flex: 1; min-width: 180px; max-width: 320px;
+      background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+      color: var(--text); padding: 6px 9px; font: inherit; font-size: 12px; }
+    .topo-toggle { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+    .topo-count { font-size: 11px; color: var(--muted); margin-left: auto; }
+    .topo-legend { display: flex; gap: 8px; flex-wrap: wrap; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+    .topo-key { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line);
+      color: var(--muted); cursor: pointer; display: flex; align-items: center; gap: 6px; background: none; font: inherit; font-size: 11px; }
+    .topo-key.off { opacity: .38; }
+    .topo-key i { width: 16px; height: 0; border-top-width: 2px; display: inline-block; }
+    .topo-canvas { height: 560px; overflow: hidden; position: relative; cursor: grab; background: var(--bg); }
+    .topo-canvas.dragging { cursor: grabbing; }
+    .topo-canvas svg { width: 100%; height: 100%; display: block; }
+    .topo-col-label { font-size: 9px; letter-spacing: .09em; fill: var(--muted); }
+    .topo-node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1; rx: 5; }
+    .topo-node text.n { font-size: 10px; fill: var(--text); }
+    .topo-node text.k { font-size: 8px; fill: var(--muted); }
+    .topo-node { cursor: pointer; }
+    .topo-node.sel rect { stroke: var(--accent); stroke-width: 2; fill: var(--accent-soft); }
+    .topo-node.dim { opacity: .2; }
+    .topo-edge { fill: none; stroke-width: 1.1; }
+    .topo-edge.dim { opacity: .06; }
+    .topo-edge.hot { stroke-width: 2.2; }
+    .topo-sel { margin: 0; padding: 10px 12px; border-top: 1px solid var(--line);
+      font-size: 12px; color: var(--muted); }
+    .topo-empty { padding: 28px 12px; text-align: center; color: var(--muted); font-size: 12px; }
+
     /* Container drawer. A panel rather than a page: the row you clicked stays
        on screen behind it, so closing returns you to your place in a list of
        twenty-one rather than to the top of it. */
@@ -205,10 +237,22 @@
           <button type="button" class="chip" data-inv="other">Other</button>
         </div>
         <p class="hint" id="inv-count"></p>
-        <div class="panel"><table>
+        <div class="panel" id="inv-table-panel"><table>
           <thead id="inv-head"></thead>
           <tbody id="inv-table"></tbody>
         </table></div>
+
+        <div class="panel" id="topo-wrap" hidden>
+          <div class="topo-bar">
+            <input type="search" id="topo-find" placeholder="Find a node by name" autocomplete="off">
+            <label class="topo-toggle"><input type="checkbox" id="topo-tree"> Process tree</label>
+            <button type="button" class="chip" id="topo-fit">Fit</button>
+            <span class="topo-count" id="topo-count"></span>
+          </div>
+          <div class="topo-legend" id="topo-legend"></div>
+          <div class="topo-canvas" id="topo-canvas"><svg id="topo-svg"></svg></div>
+          <p class="topo-sel" id="topo-sel">Select a node for its relationships.</p>
+        </div>
       </section>
 
       <div id="cdrawer-scrim" hidden></div>
@@ -751,6 +795,271 @@ function emptyInvReason() {
   return "No " + label + " observed yet. Wait for the next discovery cycle.";
 }
 
+// ---- Topology graph ---------------------------------------------------
+//
+// The edge list answered "what relates to what" one row at a time, which is
+// the one shape that cannot show a topology: the point of 336 edges is the
+// structure they form, and a table shows 336 individual facts instead.
+//
+// Containment reads left to right, one column per entity kind, because that is
+// what the edges actually encode -- a service contains its processes, a
+// process owns its sockets. A force-directed blob would look livelier and say
+// less, since position would mean nothing.
+
+// TOPO_COLUMNS is the containment order. The edges are stored child-to-parent
+// (a process points AT the container it runs in), so the column index, not the
+// stored direction, decides which end of an edge is drawn on the left.
+var TOPO_COLUMNS = [
+  { kind: "host", label: "HOST" },
+  { kind: "container", label: "CONTAINER" },
+  { kind: "service", label: "SERVICE" },
+  { kind: "process", label: "PROCESS" },
+  { kind: "network_endpoint", label: "ENDPOINT" },
+  { kind: "network_interface", label: "INTERFACE" }
+];
+
+// Edge styling by relationship type. Dashes carry meaning rather than
+// decoration: containment is solid, ownership dashed, binding dotted.
+var TOPO_EDGES = {
+  runs_in_container: { color: "#2dd4bf", dash: "", label: "runs in container" },
+  runs_service: { color: "#60a5fa", dash: "", label: "runs service" },
+  endpoint_owned_by: { color: "#fbbf24", dash: "5 3", label: "endpoint owned by" },
+  endpoint_bound_to: { color: "#f472b6", dash: "2 3", label: "endpoint bound to" },
+  parent_process: { color: "#8b98a5", dash: "", label: "parent process" },
+  hosts: { color: "#34d399", dash: "", label: "hosted on" }
+};
+function topoStyle(t) {
+  return TOPO_EDGES[t] || { color: "#a78bfa", dash: "4 2", label: t };
+}
+
+var TOPO_NODE_W = 132, TOPO_NODE_H = 22, TOPO_ROW = 28, TOPO_COL = 190;
+
+var topo = {
+  off: new Set(["parent_process"]), // the 216-edge process tree, off until asked for
+  sel: null,
+  find: "",
+  sig: null,    // what the current picture was drawn from
+  view: null,   // {x, y, k} pan and zoom
+  built: null   // last laid-out graph, so pan does not re-run layout
+};
+
+// buildTopoGraph turns the edge list into positioned nodes and edges.
+function buildTopoGraph(rels, hostName) {
+  var nodes = {}, edges = [];
+  var colOf = {};
+  TOPO_COLUMNS.forEach(function (c, i) { colOf[c.kind] = i; });
+
+  function node(name, kind) {
+    if (!name) return null;
+    var key = kind + "|" + name;
+    if (!nodes[key]) {
+      nodes[key] = { key: key, name: name, kind: kind, col: colOf[kind], deg: 0 };
+    }
+    return nodes[key];
+  }
+
+  // The host is not in the edge set -- everything on this page belongs to it,
+  // so it is never stated. Drawing it as the root is what makes the leftmost
+  // column mean something rather than starting mid-structure.
+  var host = node(hostName || "this host", "host");
+  if (host) host.col = 0;
+
+  rels.forEach(function (r) {
+    if (topo.off.has(r.type)) return;
+    var a = node(r.from, r.from_kind), b = node(r.to, r.to_kind);
+    if (!a || !b || a.col === undefined || b.col === undefined) return;
+    // Draw from the outer container to the thing it contains, whichever way
+    // the edge was stored.
+    var from = a.col <= b.col ? a : b, to = a.col <= b.col ? b : a;
+    from.deg++; to.deg++;
+    edges.push({ from: from, to: to, type: r.type, evidence: r.evidence, role: r.role });
+  });
+
+  // Anything with no parent in a column to its left hangs off the host, so the
+  // graph is one structure rather than several floating islands.
+  var hasParent = {};
+  edges.forEach(function (e) { if (e.from !== e.to) hasParent[e.to.key] = true; });
+  Object.keys(nodes).forEach(function (k) {
+    var n = nodes[k];
+    if (n === host || hasParent[k] || n.col === 0) return;
+    edges.push({ from: host, to: n, type: "hosts", evidence: "on this host", synthetic: true });
+    n.deg++; host.deg++;
+  });
+
+  var list = Object.keys(nodes).map(function (k) { return nodes[k]; });
+  if (list.length === 1 && list[0] === host) return { nodes: [], edges: [], w: 0, h: 0 };
+
+  // Column contents, most-connected first so the busy nodes sit near the top
+  // where they are found without scrolling.
+  var cols = TOPO_COLUMNS.map(function () { return []; });
+  list.forEach(function (n) { cols[n.col].push(n); });
+  cols.forEach(function (c) {
+    c.sort(function (a, b) { return b.deg - a.deg || a.name.localeCompare(b.name); });
+  });
+
+  // One barycentre pass: put each node near the average height of what it is
+  // attached to on its left. This is what stops the edges reading as a hairball.
+  var byKey = {};
+  cols.forEach(function (c, ci) {
+    c.forEach(function (n, i) { n.x = ci * TOPO_COL; n.y = i * TOPO_ROW; byKey[n.key] = n; });
+  });
+  cols.forEach(function (c, ci) {
+    if (ci === 0) return;
+    c.forEach(function (n) {
+      var sum = 0, cnt = 0;
+      edges.forEach(function (e) {
+        if (e.to === n && e.from.col < ci) { sum += e.from.y; cnt++; }
+      });
+      n.bary = cnt ? sum / cnt : n.y;
+    });
+    c.sort(function (a, b) { return a.bary - b.bary || b.deg - a.deg; });
+    c.forEach(function (n, i) { n.y = i * TOPO_ROW; });
+  });
+
+  var maxRows = 0;
+  cols.forEach(function (c) { maxRows = Math.max(maxRows, c.length); });
+  return {
+    nodes: list, edges: edges, cols: cols,
+    w: TOPO_COLUMNS.length * TOPO_COL,
+    h: Math.max(maxRows * TOPO_ROW, 120)
+  };
+}
+
+function topoEdgePath(e) {
+  var x1 = e.from.x + TOPO_NODE_W, y1 = e.from.y + TOPO_NODE_H / 2;
+  var x2 = e.to.x, y2 = e.to.y + TOPO_NODE_H / 2;
+  var mx = (x1 + x2) / 2;
+  return "M" + x1 + " " + y1 + "C" + mx + " " + y1 + " " + mx + " " + y2 + " " + x2 + " " + y2;
+}
+
+// topoSignature is what actually changes the picture: the edge set, which
+// types are hidden, which node is selected, and the search term. A refresh
+// that changes none of them must not redraw, or the graph flickers and any
+// text selection in the detail line is lost every few seconds.
+function topoSignature(rels) {
+  return rels.length + "|" + rels.map(function (r) { return r.type + r.from + r.to; }).join(",").length +
+    "|" + Array.from(topo.off).sort().join(",") + "|" + (topo.sel || "") + "|" + topo.find;
+}
+
+function renderTopology(force) {
+  var rels = (detail && detail.inventory && detail.inventory.topology) || [];
+  var sig = topoSignature(rels);
+  if (!force && sig === topo.sig && document.getElementById("topo-root")) return;
+  topo.sig = sig;
+  var svg = document.getElementById("topo-svg");
+  renderTopoLegend(rels);
+
+  var g = buildTopoGraph(rels, detail ? (detail.name || detail.host) : "");
+  topo.built = g;
+  document.getElementById("topo-count").textContent =
+    g.nodes.length + " nodes and " + g.edges.length + " relationships in this view";
+
+  if (!g.nodes.length) {
+    svg.innerHTML = '<text class="topo-col-label" x="16" y="28">No relationships to draw. ' +
+      "Turn a relationship type back on, or check that discovery is running.</text>";
+    return;
+  }
+
+  var q = topo.find.toLowerCase();
+  var parts = [];
+
+  // Column headings, drawn in graph space so they pan with the nodes they name.
+  TOPO_COLUMNS.forEach(function (c, i) {
+    if (!g.cols[i].length) return;
+    parts.push('<text class="topo-col-label" x="' + (i * TOPO_COL) + '" y="-14">' +
+      esc(c.label) + " " + g.cols[i].length + "</text>");
+  });
+
+  var selKey = topo.sel;
+  var hot = {};
+  if (selKey) {
+    g.edges.forEach(function (e) {
+      if (e.from.key === selKey || e.to.key === selKey) { hot[e.from.key] = 1; hot[e.to.key] = 1; }
+    });
+  }
+
+  g.edges.forEach(function (e) {
+    var st = topoStyle(e.type);
+    var isHot = selKey && (e.from.key === selKey || e.to.key === selKey);
+    var cls = "topo-edge" + (selKey ? (isHot ? " hot" : " dim") : "");
+    parts.push('<path class="' + cls + '" d="' + topoEdgePath(e) + '" stroke="' + st.color +
+      '"' + (st.dash ? ' stroke-dasharray="' + st.dash + '"' : "") + "></path>");
+  });
+
+  g.nodes.forEach(function (n) {
+    var dim = (selKey && !hot[n.key] && n.key !== selKey) ||
+      (q && n.name.toLowerCase().indexOf(q) < 0);
+    var cls = "topo-node" + (n.key === selKey ? " sel" : "") + (dim ? " dim" : "");
+    parts.push('<g class="' + cls + '" data-key="' + esc(n.key) + '" transform="translate(' +
+      n.x + "," + n.y + ')">' +
+      '<rect width="' + TOPO_NODE_W + '" height="' + TOPO_NODE_H + '"></rect>' +
+      '<text class="n" x="7" y="10">' + esc(clip(n.name, 21)) + "</text>" +
+      '<text class="k" x="7" y="19">' + esc(n.kind.replace(/_/g, " ")) + "</text>" +
+      "<title>" + esc(n.name + "  (" + n.kind + ")") + "</title></g>");
+  });
+
+  if (!topo.view) topo.view = topoFitView(g);
+  svg.innerHTML = '<g id="topo-root">' + parts.join("") + "</g>";
+  topoApplyView();
+}
+
+// topoApplyView moves the graph without rebuilding it. Panning re-ran the
+// whole layout on every pointer move -- a barycentre pass over 336 edges per
+// frame -- which made dragging crawl on exactly the hosts worth looking at.
+function topoApplyView() {
+  var root = document.getElementById("topo-root");
+  if (!root || !topo.view) return;
+  var v = topo.view;
+  root.setAttribute("transform", "translate(" + v.x + "," + v.y + ") scale(" + v.k + ")");
+}
+
+function topoFitView(g) {
+  var box = document.getElementById("topo-canvas");
+  var w = box.clientWidth || 900, h = box.clientHeight || 520;
+  var pad = 34;
+  var k = Math.min((w - pad * 2) / (g.w + TOPO_NODE_W), (h - pad * 2) / (g.h + 40), 1.4);
+  if (!isFinite(k) || k <= 0) k = 1;
+  return { x: pad, y: pad + 16, k: k };
+}
+
+function renderTopoLegend(rels) {
+  var counts = {};
+  rels.forEach(function (r) { counts[r.type] = (counts[r.type] || 0) + 1; });
+  var box = document.getElementById("topo-legend");
+  var keys = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+  box.innerHTML = keys.map(function (t) {
+    var st = topoStyle(t);
+    var off = topo.off.has(t);
+    return '<button type="button" class="topo-key' + (off ? " off" : "") + '" data-type="' + esc(t) + '">' +
+      '<i style="border-top:2px ' + (st.dash ? "dashed" : "solid") + " " + st.color + '"></i>' +
+      esc(st.label) + " " + counts[t] + "</button>";
+  }).join("");
+}
+
+function topoSelect(key) {
+  topo.sel = topo.sel === key ? null : key;
+  var out = document.getElementById("topo-sel");
+  if (!topo.sel || !topo.built) {
+    out.textContent = "Select a node for its relationships.";
+  } else {
+    var node = null;
+    topo.built.nodes.forEach(function (n) { if (n.key === topo.sel) node = n; });
+    var lines = topo.built.edges.filter(function (e) {
+      return e.from.key === topo.sel || e.to.key === topo.sel;
+    }).map(function (e) {
+      var other = e.from.key === topo.sel ? e.to : e.from;
+      var dir = e.from.key === topo.sel ? "→" : "←";
+      return topoStyle(e.type).label + " " + dir + " " + other.name +
+        (e.evidence ? " (" + e.evidence + ")" : "");
+    });
+    out.innerHTML = "<strong>" + esc(node ? node.name : "") + "</strong> · " +
+      lines.length + " relationship" + (lines.length === 1 ? "" : "s") +
+      (lines.length ? "<br>" + lines.slice(0, 12).map(esc).join("<br>") : "") +
+      (lines.length > 12 ? "<br>… and " + (lines.length - 12) + " more" : "");
+  }
+  renderTopology();
+}
+
 // ---- Container drawer -------------------------------------------------
 //
 // The table answers "what is running"; this answers "what is this one doing".
@@ -906,13 +1215,17 @@ function renderInventory() {
     if (still) renderContainerDrawer(still); else closeContainer();
   }
 
+  var isTopo = invTab === "topology";
+  document.getElementById("inv-table-panel").hidden = isTopo;
+  document.getElementById("topo-wrap").hidden = !isTopo;
+
   var list = inv[invTab] || [];
   document.getElementById("inv-count").textContent = list.length
     ? list.length + " " + invLabel(invTab) +
       " on " + (detail ? (detail.name || detail.host) : "")
     : emptyInvReason();
 
-  renderInvTable(list);
+  if (isTopo) renderTopology(); else renderInvTable(list);
 }
 
 // Containers carry image, state and published ports; applications carry CPU,
@@ -1216,6 +1529,80 @@ document.getElementById("logs-filter").addEventListener("input", function (e) {
 });
 // Delegated, because the table body is replaced on every refresh and a
 // listener bound to a row would not survive it.
+// Topology interactions. All delegated: the SVG is rebuilt on every refresh
+// and on every filter change, so listeners bound to its contents would not
+// survive.
+document.getElementById("topo-legend").addEventListener("click", function (e) {
+  var b = e.target.closest(".topo-key");
+  if (!b) return;
+  var t = b.dataset.type;
+  if (topo.off.has(t)) topo.off.delete(t); else topo.off.add(t);
+  // Removing a whole relationship type changes what the columns contain, so
+  // the fitted view no longer fits.
+  topo.view = null;
+  renderTopology();
+});
+
+document.getElementById("topo-tree").addEventListener("change", function (e) {
+  if (e.target.checked) topo.off.delete("parent_process"); else topo.off.add("parent_process");
+  topo.view = null;
+  renderTopology();
+});
+
+document.getElementById("topo-find").addEventListener("input", function (e) {
+  topo.find = e.target.value.trim();
+  renderTopology();
+});
+
+document.getElementById("topo-fit").addEventListener("click", function () {
+  topo.view = null;
+  renderTopology(true);
+});
+
+document.getElementById("topo-svg").addEventListener("click", function (e) {
+  var n = e.target.closest(".topo-node");
+  if (n) topoSelect(n.dataset.key); else if (topo.sel) topoSelect(topo.sel);
+});
+
+// Pan by dragging, zoom on the wheel about the pointer, so the thing under
+// the cursor stays under it.
+(function () {
+  var box = document.getElementById("topo-canvas");
+  var drag = null;
+  box.addEventListener("pointerdown", function (e) {
+    if (e.target.closest(".topo-node")) return;
+    drag = { x: e.clientX, y: e.clientY, vx: topo.view ? topo.view.x : 0, vy: topo.view ? topo.view.y : 0 };
+    box.classList.add("dragging");
+    box.setPointerCapture(e.pointerId);
+  });
+  box.addEventListener("pointermove", function (e) {
+    if (!drag || !topo.view) return;
+    topo.view.x = drag.vx + (e.clientX - drag.x);
+    topo.view.y = drag.vy + (e.clientY - drag.y);
+    topoApplyView();
+  });
+  function stop(e) {
+    if (!drag) return;
+    drag = null;
+    box.classList.remove("dragging");
+    try { box.releasePointerCapture(e.pointerId); } catch (err) { /* already released */ }
+  }
+  box.addEventListener("pointerup", stop);
+  box.addEventListener("pointercancel", stop);
+  box.addEventListener("wheel", function (e) {
+    if (!topo.view) return;
+    e.preventDefault();
+    var r = box.getBoundingClientRect();
+    var px = e.clientX - r.left, py = e.clientY - r.top;
+    var k = Math.min(3, Math.max(0.15, topo.view.k * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+    // Keep the point under the cursor fixed while the scale changes.
+    topo.view.x = px - (px - topo.view.x) * (k / topo.view.k);
+    topo.view.y = py - (py - topo.view.y) * (k / topo.view.k);
+    topo.view.k = k;
+    topoApplyView();
+  }, { passive: false });
+})();
+
 document.getElementById("inv-table").addEventListener("click", function (e) {
   var row = e.target.closest("tr.clickable");
   if (row && row.dataset.cid) openContainer(row.dataset.cid);
