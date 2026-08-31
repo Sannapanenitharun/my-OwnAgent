@@ -427,7 +427,7 @@ func TestDeadSeriesAreReclaimedBeforeLiveOnesAreRefused(t *testing.T) {
 	}
 }
 
-func TestChartedSeriesAreNeverPruned(t *testing.T) {
+func TestChartedHostSeriesAreNeverPruned(t *testing.T) {
 	// host.* series carry the history the charts draw. Losing one to make room
 	// for a process that has already exited would put a hole in a chart.
 	s := New(Limits{SeriesPerHost: 2, SeriesStaleAfter: time.Minute})

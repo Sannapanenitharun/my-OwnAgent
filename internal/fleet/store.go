@@ -107,11 +107,16 @@ type host struct {
 	batchInventory int64
 	dropped        int64
 
-	series    map[string]*series
-	entities  map[string]*entity
-	relations map[string]*relation
-	logs      *logRing
-	spans     *spanRing
+	series map[string]*series
+	// historySeries counts series holding a sample ring. Maintained rather
+	// than counted on demand: the check runs on every observation of an
+	// uncharted series, and scanning all of them there is quadratic in the
+	// series count on a host with many containers.
+	historySeries int
+	entities      map[string]*entity
+	relations     map[string]*relation
+	logs          *logRing
+	spans         *spanRing
 }
 
 type series struct {
@@ -309,13 +314,21 @@ func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time) {
 	ser.value = m.Value
 	ser.updated = ts
 
-	// History feeds the charts, and only host.* is charted. Keeping it for
-	// process.* would multiply memory by the process count.
-	if !strings.HasPrefix(m.Name, "host.") {
+	// History feeds the charts: host.* on the overview, container.instance.*
+	// on the per-container panel. Nothing else is charted.
+	//
+	// process.* stays excluded on purpose. It is keyed per executable, so a
+	// host running a few hundred programs would multiply the sample ring by
+	// that count for charts nothing draws. Containers are bounded by the
+	// collector's max_containers, and the HistorySeries cap catches the tail.
+	if !isChartable(m.Name) {
 		return
 	}
-	if len(ser.history) == 0 && s.historySeriesLocked(h) >= s.limits.HistorySeries {
-		return
+	if len(ser.history) == 0 {
+		if h.historySeries >= s.limits.HistorySeries {
+			return
+		}
+		h.historySeries++
 	}
 	ser.history = append(ser.history, Sample{Time: ts, Value: m.Value})
 	if over := len(ser.history) - s.limits.HistoryPoints; over > 0 {
@@ -323,14 +336,10 @@ func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time) {
 	}
 }
 
-func (s *Store) historySeriesLocked(h *host) int {
-	n := 0
-	for _, ser := range h.series {
-		if len(ser.history) > 0 {
-			n++
-		}
-	}
-	return n
+// isChartable reports whether a metric earns a sample ring.
+func isChartable(name string) bool {
+	return strings.HasPrefix(name, "host.") ||
+		strings.HasPrefix(name, "container.instance.")
 }
 
 // evictLocked drops the least recently seen host once the cap is reached.
@@ -406,12 +415,21 @@ func copyAttrs(in map[string]string) map[string]string {
 func (s *Store) pruneSeriesLocked(h *host, now time.Time) {
 	cutoff := now.Add(-s.limits.SeriesStaleAfter)
 	for key, ser := range h.series {
-		if len(ser.history) > 0 {
+		if !ser.updated.Before(cutoff) {
 			continue
 		}
-		if ser.updated.Before(cutoff) {
-			delete(h.series, key)
+		// A charted host.* series is never reclaimed: those are the charts the
+		// overview draws, they are few, and a gap in them reads as an outage.
+		// A container's series is different -- the container it describes can
+		// stop for good, and without this its history would hold a slot in the
+		// cap forever, eventually crowding out the containers still running.
+		if len(ser.history) > 0 {
+			if strings.HasPrefix(ser.name, "host.") {
+				continue
+			}
+			h.historySeries--
 		}
+		delete(h.series, key)
 	}
 }
 

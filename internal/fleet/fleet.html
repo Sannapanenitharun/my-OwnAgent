@@ -34,6 +34,40 @@
     header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
     h1 { margin: 0; font-size: 18px; font-weight: 650; }
     .sub { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    /* Container drawer. A panel rather than a page: the row you clicked stays
+       on screen behind it, so closing returns you to your place in a list of
+       twenty-one rather than to the top of it. */
+    #cdrawer-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 40; }
+    #cdrawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 94vw);
+      background: var(--panel); border-left: 1px solid var(--line); z-index: 41;
+      display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: -18px 0 44px rgba(0,0,0,.45); }
+    #cdrawer[hidden], #cdrawer-scrim[hidden] { display: none; }
+    #cdrawer header { display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+    #cdrawer header h3 { margin: 0; font-size: 16px; }
+    #cdrawer header p { margin: 4px 0 0; font-size: 11px; color: var(--muted); }
+    #cd-close { cursor: pointer; background: none; }
+    #cd-body { padding: 16px 18px 28px; overflow-y: auto; }
+    .cd-sec { margin: 0 0 22px; }
+    .cd-sec > h4 { margin: 0 0 10px; font-size: 10px; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--muted); font-weight: 600; }
+    .cd-kv { display: grid; grid-template-columns: minmax(88px, auto) 1fr; gap: 6px 14px; font-size: 12px; }
+    .cd-kv dt { color: var(--muted); }
+    .cd-kv dd { margin: 0; overflow-wrap: anywhere; }
+    .cd-stat { display: flex; gap: 10px; margin-bottom: 10px; }
+    .cd-stat > div { flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+    .cd-stat .n { font-size: 19px; font-variant-numeric: tabular-nums; }
+    .cd-stat .l { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .cd-chart { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 10px; }
+    .cd-chart h5 { margin: 0 0 6px; font-size: 11px; color: var(--muted); font-weight: 500; }
+    .cd-chart canvas { width: 100%; height: 92px; display: block; }
+    .cd-log { font-size: 11px; border-top: 1px solid var(--line); padding: 6px 0; display: flex; gap: 8px; }
+    .cd-log time { color: var(--muted); white-space: nowrap; }
+    .cd-log span { overflow-wrap: anywhere; }
+    .cd-empty { font-size: 12px; color: var(--muted); }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover { background: var(--accent-soft); }
     .pill { font-size: 10px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); display: inline-block; }
     .ok { color: var(--ok); border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.1); }
     .warn { color: var(--warn); border-color: rgba(251,191,36,.35); background: rgba(251,191,36,.08); }
@@ -176,6 +210,18 @@
           <tbody id="inv-table"></tbody>
         </table></div>
       </section>
+
+      <div id="cdrawer-scrim" hidden></div>
+      <aside id="cdrawer" hidden aria-labelledby="cd-name" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <h3 id="cd-name">—</h3>
+            <p class="mono" id="cd-sub"></p>
+          </div>
+          <button type="button" id="cd-close" class="chip" aria-label="Close">✕</button>
+        </header>
+        <div id="cd-body"></div>
+      </aside>
 
       <section class="view" id="view-metrics">
         <div class="chips" id="host-chips-metrics"></div>
@@ -705,6 +751,134 @@ function emptyInvReason() {
   return "No " + label + " observed yet. Wait for the next discovery cycle.";
 }
 
+// ---- Container drawer -------------------------------------------------
+//
+// The table answers "what is running"; this answers "what is this one doing".
+// The two are different questions and the row is where the second one gets
+// asked, so the name is the handle rather than a separate lookup screen.
+
+var cdOpen = null; // container id, so a refresh re-renders the open drawer
+
+// cdSeries finds a container's own series. Per-container metrics are keyed on
+// the full container id, while the inventory row carries whichever form the
+// runtime reported, so match on a prefix in either direction rather than
+// requiring the two to be spelled identically.
+function cdSeries(name, cid) {
+  if (!detail || !cid) return null;
+  var best = null;
+  (detail.metrics || []).forEach(function (m) {
+    if (m.name !== name || !m.attrs) return;
+    var id = m.attrs.container_id || "";
+    if (!id) return;
+    if (id.indexOf(cid) === 0 || cid.indexOf(id) === 0) best = m;
+  });
+  return best;
+}
+
+function cdKV(rows) {
+  var body = rows.filter(function (r) { return r[1]; }).map(function (r) {
+    return "<dt>" + esc(r[0]) + '</dt><dd class="mono">' + esc(r[1]) + "</dd>";
+  }).join("");
+  return body ? '<dl class="cd-kv">' + body + "</dl>" : '<p class="cd-empty">Not reported.</p>';
+}
+
+function openContainer(cid) {
+  var list = (detail && detail.inventory && detail.inventory.containers) || [];
+  var it = null;
+  list.forEach(function (c) { if (c.id === cid) it = c; });
+  if (!it) return;
+  cdOpen = cid;
+  document.getElementById("cdrawer").hidden = false;
+  document.getElementById("cdrawer-scrim").hidden = false;
+  renderContainerDrawer(it);
+  document.getElementById("cd-close").focus();
+}
+
+function closeContainer() {
+  cdOpen = null;
+  document.getElementById("cdrawer").hidden = true;
+  document.getElementById("cdrawer-scrim").hidden = true;
+}
+
+function renderContainerDrawer(it) {
+  document.getElementById("cd-name").textContent = it.name || shortID(it.id);
+  document.getElementById("cd-sub").textContent = it.id || "";
+
+  var cpu = cdSeries("container.instance.cpu_utilization", it.id);
+  var mem = cdSeries("container.instance.memory_bytes", it.id);
+
+  var html = "";
+
+  // Current values first. A chart shows a trend; the number is what an
+  // operator reads out loud.
+  html += '<section class="cd-sec"><h4>Resource use</h4><div class="cd-stat">' +
+    '<div><div class="n">' + (cpu ? (cpu.value * 100).toFixed(1) + "%" : "—") + '</div><div class="l">CPU</div></div>' +
+    '<div><div class="n">' + (mem ? bytes(mem.value) : "—") + '</div><div class="l">Memory</div></div></div>';
+
+  // A chart is drawn only where there is a series to draw. An empty axis
+  // reads as "zero", which is a different claim from "not measured".
+  if (cpu) html += '<div class="cd-chart" data-metric="cpu"><h5>CPU utilisation (%)</h5><canvas></canvas></div>';
+  if (mem) html += '<div class="cd-chart" data-metric="mem"><h5>Memory (MB)</h5><canvas></canvas></div>';
+  if (!cpu && !mem) {
+    html += '<p class="cd-empty">No per-container metrics for this container. The ' +
+      "container module reports them only where the runtime exposes per-container " +
+      "CPU and memory.</p>";
+  }
+  html += "</section>";
+
+  html += '<section class="cd-sec"><h4>Container</h4>' + cdKV([
+    ["Image", it.image], ["Command", it.command], ["Status", it.status || it.state],
+    ["Created", it.created ? ago(it.created) : ""], ["Ports", it.ports], ["Runtime", it.runtime]
+  ]) + "</section>";
+
+  // Its own log lines. The fleet log view interleaves every container on the
+  // host, which is unreadable when the question is about one of them.
+  var logs = ((detail && detail.logs) || []).filter(function (l) {
+    var c = l.container_id || "";
+    return c && it.id && (c.indexOf(it.id) === 0 || it.id.indexOf(c) === 0);
+  }).slice(-25).reverse();
+  html += '<section class="cd-sec"><h4>Recent logs (' + logs.length + ")</h4>";
+  html += logs.length
+    ? logs.map(function (l) {
+        return '<div class="cd-log"><time>' + esc(new Date(l.time).toLocaleTimeString()) +
+          "</time>" + severityPill(l.status, l.stream) + "<span>" + esc(l.message) + "</span></div>";
+      }).join("")
+    : '<p class="cd-empty">No log lines from this container in the retained window.</p>';
+  html += "</section>";
+
+  // What it is connected to. This is the topology edge set, filtered to the
+  // one container -- the reason the relationships are collected at all.
+  var edges = ((detail && detail.inventory && detail.inventory.topology) || []).filter(function (e) {
+    var blob = (e.from || "") + " " + (e.to || "") + " " + (e.name || "") + " " + (e.detail || "");
+    return it.id && blob.indexOf(it.id.slice(0, 12)) >= 0;
+  }).slice(0, 30);
+  html += '<section class="cd-sec"><h4>Topology (' + edges.length + ")</h4>";
+  html += edges.length
+    ? edges.map(function (e) {
+        return '<div class="cd-log"><span class="mono">' + esc(e.from || e.name || "?") +
+          " → " + esc(e.to || e.detail || "?") + "</span></div>";
+      }).join("")
+    : '<p class="cd-empty">No relationships recorded for this container.</p>';
+  html += "</section>";
+
+  document.getElementById("cd-body").innerHTML = html;
+
+  // Charts are drawn after the markup exists, because drawChart measures the
+  // canvas it is given.
+  // drawChart takes {scale,label} and series in the store's own shape, so the
+  // per-container charts are drawn by exactly the code that draws the host
+  // ones. Memory is charted in MB rather than bytes: the shared y-axis
+  // formatter prints two decimals, and "597000000.00" is not a readable axis.
+  if (cpu) {
+    drawChart(document.querySelector('#cd-body [data-metric="cpu"]'),
+      { scale: 100, label: "" }, [{ name: "cpu", attrs: cpu.attrs, history: cpu.history || [] }]);
+  }
+  if (mem) {
+    drawChart(document.querySelector('#cd-body [data-metric="mem"]'),
+      { scale: 1 / 1048576, label: "" }, [{ name: "memory", attrs: mem.attrs, history: mem.history || [] }]);
+  }
+}
+
 function renderInventory() {
   var inv = (detail && detail.inventory) || {};
   // Show each category's size on its chip, so an empty tab is visible without
@@ -716,6 +890,13 @@ function renderInventory() {
     b.style.opacity = n ? "" : ".55";
     b.classList.toggle("active", b.dataset.inv === invTab);
   });
+
+  // A refresh must not blank an open drawer, and must show the new numbers.
+  if (cdOpen) {
+    var still = null;
+    ((inv.containers) || []).forEach(function (c) { if (c.id === cdOpen) still = c; });
+    if (still) renderContainerDrawer(still); else closeContainer();
+  }
 
   var list = inv[invTab] || [];
   document.getElementById("inv-count").textContent = list.length
@@ -757,7 +938,8 @@ function renderInvTable(list) {
       var statusCell = status
         ? '<span class="pill ' + (/^up|^running/i.test(status) ? "ok" : "warn") + '">' + esc(status) + "</span>"
         : "-";
-      return '<tr title="' + esc(it.command || "") + '"><td class="mono" style="color:var(--muted)">' + esc(shortID(it.id)) + "</td>" +
+      return '<tr class="clickable" data-cid="' + esc(it.id || "") + '" title="' + esc(it.command || "") +
+        '"><td class="mono" style="color:var(--muted)">' + esc(shortID(it.id)) + "</td>" +
         '<td class="mono">' + esc(it.name) + "</td>" +
         '<td class="mono">' + esc(it.image || "-") + "</td>" +
         '<td class="mono">' + (it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "-") + "</td>" +
@@ -1012,7 +1194,24 @@ document.getElementById("metrics-filter").addEventListener("input", function (e)
 document.getElementById("logs-filter").addEventListener("input", function (e) {
   logFilter = e.target.value; renderLogs();
 });
-window.addEventListener("resize", function () { if (view === "metrics") renderCharts(); });
+// Delegated, because the table body is replaced on every refresh and a
+// listener bound to a row would not survive it.
+document.getElementById("inv-table").addEventListener("click", function (e) {
+  var row = e.target.closest("tr.clickable");
+  if (row && row.dataset.cid) openContainer(row.dataset.cid);
+});
+document.getElementById("cd-close").addEventListener("click", closeContainer);
+document.getElementById("cdrawer-scrim").addEventListener("click", closeContainer);
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape" && cdOpen) closeContainer();
+});
+// The canvases are sized by their container, so a resize needs a redraw here
+// too, not only on the metrics view.
+window.addEventListener("resize", function () {
+  if (view === "metrics") renderCharts();
+  if (cdOpen) renderInventory();
+});
+
 
 function loadDetail() {
   if (!selected) { detail = null; return Promise.resolve(); }
