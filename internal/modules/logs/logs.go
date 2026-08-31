@@ -62,6 +62,7 @@ type sourceStatus struct {
 type instruments struct {
 	lines, dropped, redacted, truncated, success, failure platform.Counter
 	leveled                                               platform.Counter
+	correlated                                            platform.Counter
 	duration                                              platform.Histogram
 	health                                                platform.Gauge
 	tel                                                   platform.Telemetry
@@ -69,16 +70,17 @@ type instruments struct {
 
 func newInstruments(t platform.Telemetry) *instruments {
 	return &instruments{
-		lines:     t.Counter(MetricLines),
-		dropped:   t.Counter(MetricDropped),
-		redacted:  t.Counter(MetricRedacted),
-		leveled:   t.Counter(MetricLeveled),
-		truncated: t.Counter(MetricTruncated),
-		success:   t.Counter(MetricCollectionSuccess),
-		failure:   t.Counter(MetricCollectionFailure),
-		duration:  t.Histogram(MetricCollectionDuration),
-		health:    t.Gauge(MetricModuleHealth),
-		tel:       t,
+		lines:      t.Counter(MetricLines),
+		dropped:    t.Counter(MetricDropped),
+		redacted:   t.Counter(MetricRedacted),
+		leveled:    t.Counter(MetricLeveled),
+		correlated: t.Counter(MetricCorrelated),
+		truncated:  t.Counter(MetricTruncated),
+		success:    t.Counter(MetricCollectionSuccess),
+		failure:    t.Counter(MetricCollectionFailure),
+		duration:   t.Histogram(MetricCollectionDuration),
+		health:     t.Gauge(MetricModuleHealth),
+		tel:        t,
 	}
 }
 
@@ -376,6 +378,19 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 			if sev, found := detectSeverity(body); found {
 				severity = sev
 				m.inst.leveled.Add(1, srcAttr, platform.A("severity", sev.String()))
+			}
+		}
+		// Trace context, read from the collected line for the same reason the
+		// level is: redaction can rewrite the head, and a correlation that
+		// depended on whether a credential happened to appear would not
+		// reproduce.
+		if s.DetectTrace {
+			if traceID, spanID, found := detectTrace(body); found {
+				attrs = append(attrs, platform.A("trace_id", traceID))
+				if spanID != "" {
+					attrs = append(attrs, platform.A("span_id", spanID))
+				}
+				m.inst.correlated.Add(1, srcAttr)
 			}
 		}
 		m.inst.tel.EmitLog(platform.LogRecord{

@@ -46,6 +46,12 @@ type Config struct {
 	// CircuitOpenFor is how long the exporter refuses new posts after tripping.
 	// Zero selects 30s.
 	CircuitOpenFor time.Duration
+
+	// TraceSampleRate is the fraction of TRACES kept, in [0,1]. Zero and one
+	// both mean keep everything -- zero because an unset field must not
+	// silently discard every span, and a rate that drops all traces has to be
+	// asked for explicitly with a negative value or an explicit config.
+	TraceSampleRate float64
 }
 
 // Exporter records locally (via Inner) and POSTs gzip JSON to Endpoint.
@@ -58,6 +64,7 @@ type Exporter struct {
 	mu            sync.Mutex
 	logs          []platform.LogRecord
 	traces        []platform.TracePayload
+	sampledTraces int64
 	droppedLogs   int64
 	droppedTraces int64
 	droppedExport int64
@@ -307,7 +314,16 @@ func (e *Exporter) exportTraces(ctx context.Context, now time.Time) {
 	if len(batch) == 0 {
 		return
 	}
-	body := encodeTraces(e.cfg.Resource, batch, now)
+	rate := e.cfg.TraceSampleRate
+	if rate == 0 {
+		rate = sampleAll
+	}
+	body, sampled := encodeTraces(e.cfg.Resource, batch, now, rate)
+	if sampled > 0 {
+		e.mu.Lock()
+		e.sampledTraces += int64(sampled)
+		e.mu.Unlock()
+	}
 	if len(body) == 0 {
 		return
 	}

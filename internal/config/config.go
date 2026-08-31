@@ -106,6 +106,14 @@ type NativeConfig struct {
 	MaxBatch int               `json:"max_batch"`
 	// Compression is "gzip" (default) or "none".
 	Compression string `json:"compression"`
+	// TraceSampleRate is the fraction of TRACES kept, in [0,1]. Unset and 1
+	// both keep everything, which is the right default for an agent whose
+	// backend it also owns -- nothing bills per span here.
+	//
+	// It is a whole-trace decision, not a per-span one: every span of a trace
+	// decides the same way, so a kept trace is complete. Set it below 1 before
+	// instrumenting a busy service, not after.
+	TraceSampleRate float64 `json:"trace_sample_rate,omitempty"`
 }
 
 // OTLPConfig is the OTLP/HTTP exporter.

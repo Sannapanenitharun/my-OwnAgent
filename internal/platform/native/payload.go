@@ -135,7 +135,9 @@ func encodeMetrics(resource []platform.Attr, gauges []platform.GaugePoint, count
 	})
 }
 
-func encodeTraces(resource []platform.Attr, payloads []platform.TracePayload, now time.Time) []byte {
+// encodeTraces renders a trace batch, dropping whole traces above the sample
+// rate. It returns the body and the number of spans sampled out.
+func encodeTraces(resource []platform.Attr, payloads []platform.TracePayload, now time.Time, rate float64) ([]byte, int) {
 	var spans []spanJSON
 	var raw []rawJSON
 	for _, p := range payloads {
@@ -171,8 +173,9 @@ func encodeTraces(resource []platform.Attr, payloads []platform.TracePayload, no
 			BodyBase64:  base64.StdEncoding.EncodeToString(p.Body),
 		})
 	}
+	spans, sampled := sampleSpans(spans, rate)
 	if len(spans) == 0 && len(raw) == 0 {
-		return nil
+		return nil, sampled
 	}
 	return mustJSON(envelope{
 		Schema:    payloadSchema,
@@ -182,7 +185,7 @@ func encodeTraces(resource []platform.Attr, payloads []platform.TracePayload, no
 		Resource:  attrMap(resource),
 		Traces:    spans,
 		Raw:       raw,
-	})
+	}), sampled
 }
 
 func spansFromOTLPJSON(body []byte) ([]spanJSON, bool) {

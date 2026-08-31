@@ -34,6 +34,16 @@
     header.top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
     h1 { margin: 0; font-size: 18px; font-weight: 650; }
     .sub { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    /* A correlated log line. Deliberately quiet: most lines will not have one,
+       and a loud badge on the few that do would read as an alert. */
+    .tracemark {
+      font-size: 9px; letter-spacing: .05em; text-transform: uppercase;
+      padding: 1px 5px; border-radius: 3px; cursor: pointer;
+      border: 1px solid var(--accent); color: var(--accent);
+      background: var(--accent-soft); margin-right: 6px; vertical-align: 1px;
+    }
+    .tracemark:hover { filter: brightness(1.25); }
+
     /* Topology graph. Containment reads left to right, one column per kind,
        because that is the question the edges answer: what contains what. A
        force-directed blob would look livelier and say less. */
@@ -645,7 +655,8 @@ function renderLogs() {
   var rows = detail.logs.filter(function (l) {
     if (!q) return true;
     var o = originOf(l);
-    return (l.message + " " + o.label + " " + (l.file || "")).toLowerCase().indexOf(q) >= 0;
+    return (l.message + " " + o.label + " " + (l.file || "") + " " +
+      (l.trace_id || "") + " " + (l.span_id || "")).toLowerCase().indexOf(q) >= 0;
   });
 
   var containers = 0, files = {};
@@ -666,7 +677,7 @@ function renderLogs() {
           "<td>" + severityPill(l.status, l.stream) + "</td>" +
           '<td><span class="pill ' + cls + '" title="' + esc(o.title || o.label) + '">' +
           esc(o.label) + "</span></td>" +
-          '<td class="mono">' + esc(l.message) + "</td></tr>";
+          '<td class="mono">' + traceMark(l) + esc(l.message) + "</td></tr>";
       }).join("")
     : '<tr><td colspan="4" class="empty">No log lines match. The agent ships logs ' +
       "only from paths its logs module is configured to read, plus journald.</td></tr>";
@@ -1415,6 +1426,16 @@ function serviceTone(state) {
   return "warn";
 }
 
+// traceMark flags a line that names the request it belongs to. Clicking it
+// filters the log list to that trace, which is the whole point of collecting
+// the id: an incident is a handful of lines scattered through hundreds.
+function traceMark(l) {
+  if (!l.trace_id) return "";
+  return '<span class="tracemark" data-trace="' + esc(l.trace_id) + '" title="' +
+    esc("trace " + l.trace_id + (l.span_id ? "  span " + l.span_id : "")) +
+    '">trace</span> ';
+}
+
 // netCell renders a container's traffic in and out.
 //
 // A dash means not measured, not zero. A container sharing the host's network
@@ -1524,6 +1545,15 @@ Array.prototype.forEach.call(document.querySelectorAll("#metric-chips .chip"), f
 document.getElementById("metrics-filter").addEventListener("input", function (e) {
   metricFilter = e.target.value; renderMetrics();
 });
+document.getElementById("logs").addEventListener("click", function (e) {
+  var m = e.target.closest(".tracemark");
+  if (!m) return;
+  var box = document.getElementById("logs-filter");
+  box.value = m.dataset.trace;
+  logFilter = m.dataset.trace;
+  renderLogs();
+});
+
 document.getElementById("logs-filter").addEventListener("input", function (e) {
   logFilter = e.target.value; renderLogs();
 });

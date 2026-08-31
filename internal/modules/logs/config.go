@@ -52,6 +52,12 @@ type Settings struct {
 	// "conservative" is not "infallible".
 	DetectSeverity bool
 
+	// DetectTrace reads trace context out of the line, so a log record can
+	// name the request it belongs to. On by default: it is the join between
+	// logs and spans, it costs one bounded scan of the head of each line, and
+	// on a host where nothing is instrumented it simply never matches.
+	DetectTrace bool
+
 	MaxLineBytes int
 	MaxBytesPerS int
 	MaxFiles     int
@@ -66,6 +72,7 @@ func DefaultSettings() Settings {
 	return Settings{
 		Interval:          2 * time.Second,
 		DetectSeverity:    true,
+		DetectTrace:       true,
 		CollectionTimeout: 2 * time.Second,
 		MaxLineBytes:      16 * 1024,
 		MaxBytesPerS:      256 * 1024,
@@ -104,6 +111,7 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 		"interval": true, "collection.timeout": true,
 		"paths": true, "exclude": true, "exclude.contains": true,
 		"severity.detect": true,
+		"trace.detect":    true,
 		"max.line_bytes":  true, "max.bytes_per_s": true,
 		"max.files": true, "max.batch": true,
 		"event_logs":    true,
@@ -136,6 +144,9 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 	}
 	if v, ok := mc.Settings["severity.detect"]; ok {
 		s.DetectSeverity = parseBool(v)
+	}
+	if v, ok := mc.Settings["trace.detect"]; ok {
+		s.DetectTrace = parseBool(v)
 	}
 	if v, ok := mc.Settings["exclude.contains"]; ok {
 		s.ExcludeContains = splitList(v)

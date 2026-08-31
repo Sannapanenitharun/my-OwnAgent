@@ -313,10 +313,11 @@ func TestEncodeTracesShipsProtobufAsSpans(t *testing.T) {
 		[][]byte{pbAttr("service.name", "checkout")},
 		fixtureSpan{traceID: []byte("5555555555555555"), spanID: []byte("66666666"), name: "GET /cart"},
 	)
-	out := encodeTraces(
+	out, _ := encodeTraces(
 		[]platform.Attr{{Key: "host.id", Value: "h1"}},
 		[]platform.TracePayload{{ContentType: "application/x-protobuf", Body: body}},
 		time.Unix(0, 0),
+		sampleAll,
 	)
 	var env struct {
 		Spans []spanJSON `json:"spans"`
@@ -339,9 +340,9 @@ func TestMislabelledContentTypeStillDecodes(t *testing.T) {
 	proto := exportRequest(nil, fixtureSpan{
 		traceID: []byte("7777777777777777"), spanID: []byte("88888888"), name: "mislabelled",
 	})
-	out := encodeTraces(nil, []platform.TracePayload{
+	out, _ := encodeTraces(nil, []platform.TracePayload{
 		{ContentType: "application/json", Body: proto},
-	}, time.Unix(0, 0))
+	}, time.Unix(0, 0), sampleAll)
 	var env struct {
 		Spans []spanJSON `json:"spans"`
 	}
@@ -351,9 +352,9 @@ func TestMislabelledContentTypeStillDecodes(t *testing.T) {
 	}
 
 	jsonBody := []byte(`{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"aa","spanId":"bb","name":"json-body"}]}]}]}`)
-	out = encodeTraces(nil, []platform.TracePayload{
+	out, _ = encodeTraces(nil, []platform.TracePayload{
 		{ContentType: "application/x-protobuf", Body: jsonBody},
-	}, time.Unix(0, 0))
+	}, time.Unix(0, 0), sampleAll)
 	env.Spans = nil
 	_ = json.Unmarshal(out, &env)
 	if len(env.Spans) != 1 || env.Spans[0].Name != "json-body" {
@@ -365,9 +366,9 @@ func TestMislabelledContentTypeStillDecodes(t *testing.T) {
 // agent cannot parse must reach the archive rather than vanish.
 func TestUndecodableBodyIsStillShipped(t *testing.T) {
 	junk := []byte("\xff\xfe not a known encoding")
-	out := encodeTraces(nil, []platform.TracePayload{
+	out, _ := encodeTraces(nil, []platform.TracePayload{
 		{ContentType: "application/octet-stream", Body: junk},
-	}, time.Unix(0, 0))
+	}, time.Unix(0, 0), sampleAll)
 	var env struct {
 		Raw []rawJSON `json:"raw"`
 	}

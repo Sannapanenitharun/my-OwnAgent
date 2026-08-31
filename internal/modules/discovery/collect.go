@@ -166,24 +166,30 @@ func (m *Module) runCycle(ctx context.Context, now time.Time) (cycleStats, error
 	resync := allow >= PriorityResync && m.resyncDue(now, s)
 	st.Resync = resync
 
+	snapshotDone := true
 	if allow >= PriorityEntities && s.EventsEnabled {
 		if resync {
-			for _, e := range m.topo.snapshot() {
-				em.emitEntitySnapshot(e, now)
-			}
+			snapshotDone = m.emitEntitySnapshotFrom(em, now)
 		} else {
 			for _, c := range changes {
 				em.emitEntityChange(c, now)
 			}
 		}
 	}
-	if allow >= PriorityRelations && s.EventsEnabled {
+	// Relationships are held back until the entity snapshot has finished. An
+	// edge whose endpoints have not been published names nodes the receiver
+	// has never heard of, and a correct receiver drops it -- so emitting them
+	// early does not merely reorder the work, it discards it.
+	if allow >= PriorityRelations && s.EventsEnabled && snapshotDone {
 		added, removed, dropped := m.emitRelationChanges(em, rs, now, resync, s)
 		st.RelationsAdded, st.RelationsRemoved, st.RelationsDropped = added, removed, dropped
 	}
 	m.rememberRelations(rs, s)
 
-	if resync {
+	// The resync is only over when the whole inventory has actually gone out.
+	// Stamping lastResync on a truncated snapshot is what made the truncation
+	// permanent: the next attempt was an hour away and cut at the same place.
+	if resync && snapshotDone {
 		m.lastResync = now
 		em.emitSnapshotSummary(m.topo.size(), rs.len(), em.eventsDropped, now)
 	}
@@ -498,3 +504,31 @@ func (m *Module) recordCycle(st cycleStats, err error) {
 
 // itoaU renders an unsigned value for an attribute.
 func itoaU(v uint64) string { return strconv.FormatUint(v, 10) }
+
+// emitEntitySnapshotFrom emits the inventory, resuming where the previous
+// cycle's budget ran out. It reports whether the snapshot is now complete.
+//
+// The budget exists to stop a topology storm becoming an event storm, and that
+// is still worth having -- but a budget should DEFER work, not discard it. The
+// cursor turns "these entities are dropped forever" into "these entities go
+// out next cycle", which costs a few seconds of staleness and nothing else.
+func (m *Module) emitEntitySnapshotFrom(em *emitter, now time.Time) bool {
+	sent := m.resyncCursor
+	for _, e := range m.topo.snapshot() {
+		// snapshot() is sorted by key, so resuming is a matter of skipping
+		// everything already sent.
+		if m.resyncCursor != "" && e.key <= m.resyncCursor {
+			continue
+		}
+		if !em.emitEntitySnapshot(e, now) {
+			// Budget exhausted. The cursor holds the last key that actually
+			// went out, so the next cycle resumes immediately after it and
+			// nothing is skipped or repeated.
+			m.resyncCursor = sent
+			return false
+		}
+		sent = e.key
+	}
+	m.resyncCursor = ""
+	return true
+}

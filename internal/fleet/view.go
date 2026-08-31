@@ -24,6 +24,12 @@ type LogLine struct {
 	File      string `json:"file,omitempty"`
 	Container string `json:"container_id,omitempty"`
 	Stream    string `json:"stream,omitempty"`
+	// TraceID is the request this line belongs to, where the application wrote
+	// its trace context into the line. It is the join between the Logs tab and
+	// the Traces tab -- without it the two are separate lists of the same
+	// incident.
+	TraceID string `json:"trace_id,omitempty"`
+	SpanID  string `json:"span_id,omitempty"`
 }
 
 // Span is one recent span, reduced to what a list can usefully show.

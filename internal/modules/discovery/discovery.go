@@ -67,7 +67,16 @@ type Module struct {
 	selfAttr      []platform.Attr
 	prevRelations map[relationKey]string
 	lastResync    time.Time
-	lastDropped   int64
+	// resyncCursor is where an unfinished inventory snapshot stopped.
+	//
+	// A resync emits every entity, and the per-cycle event budget can be
+	// smaller than the inventory. Truncating there was silently permanent:
+	// snapshot() is sorted by key, so the SAME entities were cut every time
+	// and could never reach a receiver -- while relationship deltas naming
+	// them still went out, leaving edges pointing at nodes nobody had heard
+	// of. Empty means no snapshot is in progress.
+	resyncCursor string
+	lastDropped  int64
 
 	unresolvedTotal int64
 

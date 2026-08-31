@@ -255,6 +255,8 @@ func (s *Store) Ingest(signal string, body []byte) error {
 				File:      rec.Attributes["file"],
 				Container: rec.Attributes["container_id"],
 				Stream:    rec.Attributes["stream"],
+				TraceID:   rec.Attributes["trace_id"],
+				SpanID:    rec.Attributes["span_id"],
 			})
 		}
 	case "traces":

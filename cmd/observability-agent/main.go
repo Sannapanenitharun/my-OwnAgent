@@ -213,6 +213,8 @@ func buildPorts(cfg config.Config) (platform.Ports, localui.HostDetails, error) 
 			Compression: cfg.Export.Native.Compression,
 			Resource:    resource,
 			SpoolDir:    spool,
+
+			TraceSampleRate: cfg.Export.Native.TraceSampleRate,
 		})
 		exp.Start()
 		tel = exp
