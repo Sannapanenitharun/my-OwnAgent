@@ -229,3 +229,39 @@ func TestUnmeasuredNetworkLeavesTheRowBlank(t *testing.T) {
 		t.Error("memory was lost for a container with no network measurement")
 	}
 }
+
+// TestMeasuredZeroIsNotUnmeasurable. A quiet container and a host-networked one
+// are different facts, and omitempty drops a genuine zero -- so without an
+// explicit flag the view renders them identically and the distinction the
+// agent went to the trouble of preserving is thrown away at the last step.
+func TestMeasuredZeroIsNotUnmeasurable(t *testing.T) {
+	s := New(Limits{})
+	ev := `{"schema":"obsagent.v1","signal":"inventory","host":"h1","resource":{"host.id":"h1"},"events":[
+		{"name":"discovery.entity.discovered","timestamp":"2026-01-01T00:00:00Z","attributes":{
+			"entity.kind":"container","container_id":"idle00000000","name":"idle"}},
+		{"name":"discovery.entity.discovered","timestamp":"2026-01-01T00:00:00Z","attributes":{
+			"entity.kind":"container","container_id":"hostnet00000","name":"hostnet"}}]}`
+	if err := s.Ingest("inventory", []byte(ev)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	// The idle container HAS counters, both reading zero. The host-networked
+	// one has none at all.
+	if err := s.Ingest("metrics", containerMetrics("h1", "container.instance.network.rx_bytes", "idle00000000", 0)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if err := s.Ingest("metrics", containerMetrics("h1", "container.instance.memory_bytes", "hostnet00000", 512)); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	d, _ := s.Host("h1")
+	byName := map[string]InventoryItem{}
+	for _, c := range d.Inventory.Containers {
+		byName[c.Name] = c
+	}
+	if !byName["idle"].NetMeasured {
+		t.Error("an idle container with zero counters reads as unmeasurable")
+	}
+	if byName["hostnet"].NetMeasured {
+		t.Error("a container with no network series reads as measured")
+	}
+}

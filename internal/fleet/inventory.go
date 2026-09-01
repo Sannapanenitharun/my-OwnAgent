@@ -68,7 +68,14 @@ type InventoryItem struct {
 	// host-networked container has no traffic of its own to report.
 	NetRx float64 `json:"net_rx,omitempty"`
 	NetTx float64 `json:"net_tx,omitempty"`
-	Count float64 `json:"count,omitempty"`
+	// NetMeasured says the container HAS network counters, which is not the
+	// same as having sent anything. Without it an idle container and a
+	// host-networked one render identically -- and omitempty drops a genuine
+	// zero, so the view cannot tell "sent nothing" from "has no traffic of its
+	// own to report". The distinction is the whole reason the agent leaves the
+	// series absent rather than emitting zero.
+	NetMeasured bool    `json:"net_measured,omitempty"`
+	Count       float64 `json:"count,omitempty"`
 }
 
 // Relation is one edge of the host's topology, with both endpoints resolved to
@@ -762,7 +769,10 @@ func (s *Store) joinContainerUsageLocked(h *host, containers []InventoryItem) {
 	if len(containers) == 0 {
 		return
 	}
-	type usage struct{ cpu, mem, rx, tx float64 }
+	type usage struct {
+		cpu, mem, rx, tx float64
+		netSeen          bool
+	}
 	byID := map[string]*usage{}
 	for _, ser := range h.series {
 		if !strings.HasPrefix(ser.name, "container.instance.") || ser.attrs == nil {
@@ -786,9 +796,9 @@ func (s *Store) joinContainerUsageLocked(h *host, containers []InventoryItem) {
 		case "container.instance.cpu_utilization":
 			u.cpu = ser.value
 		case "container.instance.network.rx_bytes":
-			u.rx = ser.value
+			u.rx, u.netSeen = ser.value, true
 		case "container.instance.network.tx_bytes":
-			u.tx = ser.value
+			u.tx, u.netSeen = ser.value, true
 		}
 	}
 	if len(byID) == 0 {
@@ -813,5 +823,6 @@ func (s *Store) joinContainerUsageLocked(h *host, containers []InventoryItem) {
 		}
 		containers[i].CPU, containers[i].Memory = u.cpu, u.mem
 		containers[i].NetRx, containers[i].NetTx = u.rx, u.tx
+		containers[i].NetMeasured = u.netSeen
 	}
 }

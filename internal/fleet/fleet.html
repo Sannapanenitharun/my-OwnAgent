@@ -1442,7 +1442,14 @@ function traceMark(l) {
 // namespace has no traffic of its own -- its packets are already counted in
 // host.network.* -- and printing 0 B there would claim it sent nothing.
 function netCell(it) {
-  if (!it.net_rx && !it.net_tx) return '<span style="color:var(--muted)">-</span>';
+  // Measured-and-idle is not the same as unmeasurable, and they used to render
+  // alike: a zero is dropped by omitempty, so a quiet container looked exactly
+  // like one sharing the host's namespace.
+  if (!it.net_rx && !it.net_tx) {
+    return it.net_measured
+      ? '<span title="measured; no traffic in the retained window">0 B</span>'
+      : '<span style="color:var(--muted)" title="not measured: this container shares the host network namespace, so its packets are counted in the host interfaces">-</span>';
+  }
   return '<span title="received">↓' + bytes(it.net_rx || 0) + "</span> " +
     '<span title="transmitted" style="color:var(--muted)">↑' + bytes(it.net_tx || 0) + "</span>";
 }

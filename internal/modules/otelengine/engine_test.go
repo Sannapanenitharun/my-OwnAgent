@@ -191,9 +191,20 @@ func TestABadAddressInTheListIsRejected(t *testing.T) {
 	}
 }
 
-func TestAPartialBindStartsNothing(t *testing.T) {
-	// Half a receiver is worse than none: the containers that could not reach
-	// it would be indistinguishable from containers that are not instrumented.
+// TestAPartialBindStillServesWhatItCan.
+//
+// This test asserted the opposite until a live host proved the policy wrong.
+// The reasoning for all-or-nothing was that half a receiver is worse than
+// none, because containers that could not reach it would be indistinguishable
+// from containers that are not instrumented. The reasoning was sound; the
+// remedy was not. These addresses are Docker bridge gateways, and one of the
+// twelve on a real host was removed -- so the receiver refused to start, burnt
+// its restart budget, and stayed dead. Instead of some containers being unable
+// to reach it, every container was.
+//
+// What that concern actually needs is visibility, not refusal: bind what can
+// be bound, and make the gap between configured and bound loud.
+func TestAPartialBindStillServesWhatItCan(t *testing.T) {
 	taken := freeAddr(t)
 	blocker, err := net.Listen("tcp", taken)
 	if err != nil {
@@ -202,17 +213,19 @@ func TestAPartialBindStartsNothing(t *testing.T) {
 	defer func() { _ = blocker.Close() }()
 
 	free := freeAddr(t)
+	tel := inproc.NewTelemetry()
 	m := New()
-	h := testHost(t, inproc.NewTelemetry(), config.ModuleConfig{Settings: map[string]string{"listen": free + "," + taken}})
-	if err := m.Start(context.Background(), h); err == nil {
-		_ = m.Stop(context.Background())
-		t.Fatal("Start succeeded with one address unavailable")
+	h := testHost(t, tel, config.ModuleConfig{Settings: map[string]string{"listen": free + "," + taken}})
+	if err := m.Start(context.Background(), h); err != nil {
+		t.Fatalf("Start refused to serve the address that was available: %v", err)
 	}
-	// The address that did bind must have been released, not leaked.
-	ln, err := net.Listen("tcp", free)
-	if err != nil {
-		t.Errorf("the successfully bound address was leaked: %v", err)
-	} else {
-		_ = ln.Close()
+	defer func() { _ = m.Stop(context.Background()) }()
+
+	waitListening(t, free)
+	if v, _ := gaugeValue(tel, MetricListenersBound); v != 1 {
+		t.Errorf("listeners_bound = %v, want 1", v)
+	}
+	if v, _ := gaugeValue(tel, MetricListenersConfigured); v != 2 {
+		t.Errorf("listeners_configured = %v, want 2", v)
 	}
 }

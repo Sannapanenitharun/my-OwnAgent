@@ -34,6 +34,14 @@ const (
 
 const PermissionReceive platform.Permission = "otel:receive"
 
+// Listener counts. Two gauges rather than one, because "bound 11" only means
+// something next to "configured 12" -- the gap is the alert, and a single
+// number cannot express it.
+const (
+	MetricListenersBound      = "otel.receiver.listeners_bound"
+	MetricListenersConfigured = "otel.receiver.listeners_configured"
+)
+
 const (
 	defaultListen   = "127.0.0.1:4318"
 	defaultMaxBody  = 4 << 20
@@ -155,21 +163,50 @@ func (m *Module) Start(ctx context.Context, h module.Host) error {
 		return fmt.Errorf("otel-engine: authorization refused: %w", err)
 	}
 
-	// Bind every address before committing to any of them. A partial bind
-	// would leave the receiver reachable from some networks and not others,
-	// which is worse than not starting: the containers that could not reach it
-	// would look like containers that are not instrumented.
+	// Bind what can be bound, and report what could not.
+	//
+	// This used to be all-or-nothing, on the reasoning that a partial bind
+	// leaves the receiver reachable from some networks and not others, and the
+	// containers that could not reach it would look like containers that are
+	// not instrumented. The reasoning was right and the remedy was wrong. The
+	// addresses here are Docker bridge gateways, and those come and go: a
+	// network is removed, or has not been recreated yet at boot. One absent
+	// address then took the whole receiver down -- so instead of some
+	// containers being unable to reach it, EVERY container was, and the module
+	// crash-looped until it exhausted its restart budget and stayed dead.
+	//
+	// Refusing to serve eleven working addresses because a twelfth is gone is
+	// not caution. What the original concern actually needs is visibility, so
+	// every failure raises a diagnostic naming the address and the count of
+	// bound addresses is published as a metric. An operator can then see
+	// "11 of 12" rather than either silence or an outage.
 	lns := make([]net.Listener, 0, len(settings.Listen))
+	var failed []string
 	for _, addr := range settings.Listen {
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
-			for _, open := range lns {
-				_ = open.Close()
-			}
-			return fmt.Errorf("otel-engine: listen %s: %w", addr, err)
+			failed = append(failed, addr)
+			h.Diagnostics.Record(diagnostics.Record{
+				Code:     diagnostics.CodeDependencyUnavailable,
+				Severity: diagnostics.Warn,
+				Message:  "OTLP receiver could not bind " + addr,
+				Remediation: "the address is usually a Docker bridge gateway; " +
+					"remove it from otel-engine listen if the network is gone, " +
+					"or containers on other networks will still be served",
+				Attrs: map[string]string{"addr": addr, "error": err.Error()},
+			})
+			h.Logger.Warn("otlp http receiver could not bind", "addr", addr, "error", err)
+			continue
 		}
 		lns = append(lns, ln)
 	}
+	// Nothing bound is a real failure: there is no receiver at all.
+	if len(lns) == 0 {
+		return fmt.Errorf("otel-engine: no listen address could be bound (tried %d): %s",
+			len(settings.Listen), strings.Join(failed, ", "))
+	}
+	h.Telemetry.Gauge(MetricListenersBound).Set(float64(len(lns)))
+	h.Telemetry.Gauge(MetricListenersConfigured).Set(float64(len(settings.Listen)))
 
 	m.mu.Lock()
 	if m.started {
@@ -198,13 +235,20 @@ func (m *Module) Start(ctx context.Context, h module.Host) error {
 
 	// One goroutine per listener, all serving the same mux. done closes when
 	// the last of them returns, so Stop waits for all of them.
+	//
+	// srv and done are captured here rather than read from the module inside
+	// the goroutines. Stop sets m.srv to nil, and a goroutine that had not yet
+	// been scheduled would then call Serve on a nil server and panic -- a race
+	// that needs only a Start immediately followed by a Stop, which is exactly
+	// what a failing start and a test both do.
+	srv, done := m.srv, m.done
 	var wg sync.WaitGroup
 	for _, ln := range lns {
 		h.Logger.Info("otlp http receiver listening", "addr", ln.Addr().String())
 		wg.Add(1)
 		go func(ln net.Listener) {
 			defer wg.Done()
-			err := m.srv.Serve(ln)
+			err := srv.Serve(ln)
 			if err != nil && !errors.Is(err, http.ErrServerClosed) && runCtx.Err() == nil {
 				h.ReportFailure(err)
 			}
@@ -212,7 +256,7 @@ func (m *Module) Start(ctx context.Context, h module.Host) error {
 	}
 	go func() {
 		wg.Wait()
-		close(m.done)
+		close(done)
 	}()
 	return nil
 }
