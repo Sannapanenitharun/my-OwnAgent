@@ -184,14 +184,35 @@ func (e *Exporter) EmitLog(rec platform.LogRecord) {
 // the batch itself is signal-agnostic.
 func (e *Exporter) IngestTraces(payload platform.TracePayload) {
 	e.inner.IngestTraces(payload)
+
+	sig := payload.Signal
+	if sig == "" {
+		sig = signalTraces
+	}
+
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if len(e.traces) >= e.cfg.MaxBatch {
+	// One batch holds all three signals, because that is how they arrive: one
+	// receiver, one queue. The cap is therefore shared, and a flood of one
+	// signal can crowd out another -- which is why the drop is labelled with
+	// the signal it happened to. Counting all of them as dropped TRACES, as
+	// this did when it only accepted traces, would send an operator looking
+	// for a tracing problem that does not exist.
+	full := len(e.traces) >= e.cfg.MaxBatch
+	if full {
 		e.droppedTraces++
 		e.droppedExport++
-		return
+	} else {
+		e.traces = append(e.traces, payload)
 	}
-	e.traces = append(e.traces, payload)
+	e.mu.Unlock()
+
+	// Outside the lock: inner.Counter takes its own, and nesting the two would
+	// invent a lock ordering this file does not otherwise have.
+	if full {
+		e.inner.Counter("agent.export.received_dropped").Add(1,
+			platform.A("signal", sig), platform.A("reason", "batch_full"),
+			platform.A("exporter", "native"))
+	}
 }
 
 func (e *Exporter) GaugeSnapshot() []platform.GaugePoint {

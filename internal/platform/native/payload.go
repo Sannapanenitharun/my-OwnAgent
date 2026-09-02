@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/obsagent/observability-agent/internal/platform"
+	"github.com/obsagent/observability-agent/internal/platform/scrub"
 )
 
 const payloadSchema = "obsagent.v1"
@@ -135,6 +136,32 @@ func encodeMetrics(resource []platform.Attr, gauges []platform.GaugePoint, count
 	})
 }
 
+// scrubMap redacts credential-shaped substrings from decoded attribute values.
+//
+// WHY THIS LIVES HERE rather than in the scrub wrapper. Everything a module
+// emits passes through scrub.Telemetry, which redacts bodies and attributes
+// once, centrally. Received OTLP does not: it arrives as opaque bytes, and
+// scrub.IngestTraces forwards them untouched precisely because rewriting
+// protobuf in flight would corrupt it.
+//
+// That was harmless while the bytes stayed opaque -- they were base64'd into
+// the envelope's `raw` array and nothing read them. The moment this package
+// began DECODING them into log bodies, span names and attribute values, it
+// inherited the obligation the wrapper could not discharge. An application
+// that logs "password=hunter2" must not have that shipped off the host just
+// because it arrived over OTLP instead of a file.
+func scrubMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return in
+	}
+	for k, v := range in {
+		if s := scrub.String(v); s != v {
+			in[k] = s
+		}
+	}
+	return in
+}
+
 // otlpStats reports what became of a received OTLP batch, so the outcome is a
 // number an operator can read rather than an absence they have to infer.
 type otlpStats struct {
@@ -166,6 +193,15 @@ func encodeOTLPMetrics(resource []platform.Attr, payloads []platform.TracePayloa
 		all.Counters = append(all.Counters, m.Counters...)
 		all.Histograms = append(all.Histograms, m.Histograms...)
 		stats.Unsupported += m.Unsupported
+	}
+	for i := range all.Gauges {
+		all.Gauges[i].Attributes = scrubMap(all.Gauges[i].Attributes)
+	}
+	for i := range all.Counters {
+		all.Counters[i].Attributes = scrubMap(all.Counters[i].Attributes)
+	}
+	for i := range all.Histograms {
+		all.Histograms[i].Attributes = scrubMap(all.Histograms[i].Attributes)
 	}
 	stats.Decoded = all.points()
 	if all.points() == 0 {
@@ -202,6 +238,10 @@ func encodeOTLPLogs(resource []platform.Attr, payloads []platform.TracePayload, 
 			continue
 		}
 		recs = append(recs, got...)
+	}
+	for i := range recs {
+		recs[i].Message = scrub.String(recs[i].Message)
+		recs[i].Attributes = scrubMap(recs[i].Attributes)
 	}
 	stats.Decoded = len(recs)
 	if len(recs) == 0 {
@@ -281,6 +321,11 @@ func encodeTraces(resource []platform.Attr, payloads []platform.TracePayload, no
 			ContentType: p.ContentType,
 			BodyBase64:  base64.StdEncoding.EncodeToString(p.Body),
 		})
+	}
+	for i := range spans {
+		spans[i].Name = scrub.String(spans[i].Name)
+		spans[i].Status = scrub.String(spans[i].Status)
+		spans[i].Attributes = scrubMap(spans[i].Attributes)
 	}
 	spans, sampled := sampleSpans(spans, rate)
 	if len(spans) == 0 && len(raw) == 0 {

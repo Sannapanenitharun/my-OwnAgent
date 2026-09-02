@@ -83,6 +83,13 @@ func (t *Telemetry) EmitLog(rec platform.LogRecord) {
 
 func (t *Telemetry) IngestTraces(p platform.TracePayload) {
 	// Opaque OTLP bytes — scrubbing would corrupt protobuf.
+	//
+	// This is therefore the ONE emit path this wrapper does not cover, and
+	// the obligation does not disappear with it: whichever exporter decodes
+	// these bytes into strings must redact what it decodes. The native
+	// exporter does, in payload.go's scrubMap. An exporter that forwards the
+	// bytes unchanged (the OTLP passthrough) inherits nothing, because it
+	// never turns them into text.
 	t.Inner.IngestTraces(p)
 }
 

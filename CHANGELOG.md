@@ -26,6 +26,19 @@ methods, in severity order.
   the old "reject only if BOTH IDs are empty" gate admitted it. Both IDs are
   now required, and `encodeTraces` refuses a non-trace signal outright.
 
+- **Decoded OTLP content was shipped unredacted.** Everything a module emits
+  passes through the scrub wrapper; received OTLP does not, because it arrives
+  as opaque bytes and rewriting protobuf in flight would corrupt it. That was
+  harmless while the bytes stayed opaque, and stopped being harmless the
+  moment this change began decoding them: an application logging
+  `password=hunter2` over OTLP had it shipped off the host in the clear, where
+  the same line read from a file was redacted. Decoded log bodies, span names
+  and all attribute values are now scrubbed at the point of decode.
+- **Every dropped OTLP payload was counted as a dropped trace.** The receive
+  batch is shared across signals, so a metrics flood can crowd out traces;
+  labelling those drops `traces` sent an operator hunting a tracing problem
+  that did not exist. Drops now carry their own signal.
+
 ### Added
 
 - **OTLP metric and log decoders** (`internal/platform/native/otlpmetrics.go`,

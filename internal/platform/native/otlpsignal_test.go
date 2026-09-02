@@ -241,3 +241,111 @@ func TestAnAllZeroTraceIDIsNotCorrelation(t *testing.T) {
 		t.Errorf("an all-zero trace ID was carried as correlation: %v", recs[0].Attributes)
 	}
 }
+
+// TestDecodedOTLPContentIsRedacted.
+//
+// Everything a module emits passes through scrub.Telemetry. Received OTLP does
+// NOT: it arrives as opaque bytes and scrub forwards them untouched, because
+// rewriting protobuf in flight would corrupt it. That was harmless while the
+// bytes stayed opaque. Decoding them into log bodies and attribute values
+// inherited an obligation the wrapper cannot discharge, and this is the test
+// that says so.
+func TestDecodedOTLPContentIsRedacted(t *testing.T) {
+	secret := "AKIAIOSFODNN7EXAMPLE"
+
+	// A log body carrying a credential.
+	rec := pbBytes(fieldLogBody, pbString(fieldAnyValueString, "connecting with password=hunter2"))
+	rec = append(rec, pbBytes(fieldLogAttributes,
+		append(pbString(fieldKeyValueKey, "aws.key"),
+			pbBytes(fieldKeyValueValue, pbString(fieldAnyValueString, secret))...))...)
+	body := pbBytes(fieldExportResourceLogs,
+		pbBytes(fieldResourceLogsScope, pbBytes(fieldScopeLogsRecords, rec)))
+
+	out, _ := encodeOTLPLogs(nil, []platform.TracePayload{{
+		ContentType: "application/x-protobuf", Body: body, Signal: "logs",
+	}}, time.Unix(0, 0))
+	s := string(out)
+	if strings.Contains(s, "hunter2") {
+		t.Errorf("a password reached the envelope unredacted: %s", s)
+	}
+	if strings.Contains(s, secret) {
+		t.Errorf("an AWS key in a log ATTRIBUTE reached the envelope unredacted: %s", s)
+	}
+
+	// A metric attribute carrying one.
+	kv := append(pbString(fieldKeyValueKey, "token"),
+		pbBytes(fieldKeyValueValue, pbString(fieldAnyValueString, secret))...)
+	point := append(pbDouble(fieldNumberAsDouble, 1), pbBytes(fieldNumberAttributes, kv)...)
+	metric := append(pbString(fieldMetricName, "calls"),
+		pbBytes(fieldMetricGauge, pbBytes(fieldPointsGauge, point))...)
+	mbody := pbBytes(fieldExportResourceMetrics,
+		pbBytes(fieldResourceMetricsScope, pbBytes(fieldScopeMetricsMetrics, metric)))
+
+	mout, _ := encodeOTLPMetrics(nil, []platform.TracePayload{{
+		ContentType: "application/x-protobuf", Body: mbody, Signal: "metrics",
+	}}, time.Unix(0, 0))
+	if strings.Contains(string(mout), secret) {
+		t.Errorf("an AWS key in a metric attribute reached the envelope unredacted: %s", mout)
+	}
+}
+
+// TestADroppedPayloadIsLabelledWithItsOwnSignal. The batch is shared across
+// signals, so a metrics flood can crowd out traces; counting that as a dropped
+// TRACE sends an operator hunting a tracing problem that does not exist.
+func TestADroppedPayloadIsLabelledWithItsOwnSignal(t *testing.T) {
+	inner := newCountingTelemetry()
+	e := New(inner, Config{Endpoint: "http://127.0.0.1:1", MaxBatch: 1})
+
+	e.IngestTraces(platform.TracePayload{Body: []byte{1}, Signal: "traces"})
+	e.IngestTraces(platform.TracePayload{Body: []byte{1}, Signal: "metrics"}) // over the cap
+
+	got := inner.counts["agent.export.received_dropped|metrics"]
+	if got != 1 {
+		t.Errorf("dropped counter for metrics = %d, want 1 (counts=%v)", got, inner.counts)
+	}
+	if inner.counts["agent.export.received_dropped|traces"] != 0 {
+		t.Error("the dropped metrics payload was counted against traces")
+	}
+}
+
+// countingTelemetry records counter adds by name and signal attribute.
+type countingTelemetry struct {
+	platform.Telemetry
+	counts map[string]int64
+}
+
+func newCountingTelemetry() *countingTelemetry {
+	return &countingTelemetry{counts: map[string]int64{}}
+}
+
+func (c *countingTelemetry) Counter(name string) platform.Counter {
+	return counterFunc{name: name, c: c}
+}
+func (c *countingTelemetry) Gauge(string) platform.Gauge         { return nopGauge{} }
+func (c *countingTelemetry) Histogram(string) platform.Histogram { return nopHist{} }
+func (c *countingTelemetry) Emit(platform.Event)                 {}
+func (c *countingTelemetry) EmitLog(platform.LogRecord)          {}
+func (c *countingTelemetry) IngestTraces(platform.TracePayload)  {}
+
+type counterFunc struct {
+	name string
+	c    *countingTelemetry
+}
+
+func (f counterFunc) Add(n int64, attrs ...platform.Attr) {
+	key := f.name
+	for _, a := range attrs {
+		if a.Key == "signal" {
+			key += "|" + a.Value
+		}
+	}
+	f.c.counts[key] += n
+}
+
+type nopGauge struct{}
+
+func (nopGauge) Set(float64, ...platform.Attr) {}
+
+type nopHist struct{}
+
+func (nopHist) Observe(float64, ...platform.Attr) {}
