@@ -63,6 +63,27 @@ type Settings struct {
 	MaxFiles     int
 	MaxBatch     int
 
+	// DiscoverLogs finds log files by asking which ones processes hold open
+	// for writing, instead of tailing only what an operator listed. Off by
+	// default: it reads every process's descriptors, and an agent that starts
+	// tailing files nobody asked for should be a choice rather than a
+	// surprise.
+	DiscoverLogs bool
+
+	// DiscoverRoots bounds where discovery is willing to look. Empty selects
+	// /var/log. This is a security boundary, not a filter -- see
+	// discover_linux.go.
+	DiscoverRoots []string
+
+	// DiscoverInterval is how often the descriptor walk runs. Zero selects
+	// 60s, which is what OneAgent uses and is far longer than the collection
+	// interval on purpose: the set of open log files changes when processes
+	// start, not when lines are written.
+	DiscoverInterval time.Duration
+
+	// MaxDiscovered caps how many files discovery will add. Zero selects 128.
+	MaxDiscovered int
+
 	EventLogs []string
 
 	DisabledSources map[Source]bool
@@ -116,6 +137,10 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 		"max.files": true, "max.batch": true,
 		"event_logs":    true,
 		"disable.files": true, "disable.journald": true, "disable.eventlog": true,
+		"discover":          true,
+		"discover.roots":    true,
+		"discover.interval": true,
+		"discover.max":      true,
 	}
 	for _, k := range keys {
 		if !known[k] {
@@ -153,6 +178,24 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 	}
 	if v, ok := mc.Settings["event_logs"]; ok {
 		s.EventLogs = splitList(v)
+	}
+	if v, ok := mc.Settings["discover"]; ok {
+		s.DiscoverLogs = parseBool(v)
+	}
+	if v, ok := mc.Settings["discover.roots"]; ok {
+		s.DiscoverRoots = splitList(v)
+	}
+	if v, ok := mc.Settings["discover.interval"]; ok {
+		s.DiscoverInterval, err = time.ParseDuration(v)
+		if err != nil || s.DiscoverInterval <= 0 {
+			return Settings{}, fmt.Errorf("logs: discover.interval: %w", err)
+		}
+	}
+	if v, ok := mc.Settings["discover.max"]; ok {
+		s.MaxDiscovered, err = strconv.Atoi(v)
+		if err != nil || s.MaxDiscovered <= 0 {
+			return Settings{}, fmt.Errorf("logs: discover.max must be a positive integer")
+		}
 	}
 	if v, ok := mc.Settings["max.line_bytes"]; ok {
 		s.MaxLineBytes, err = strconv.Atoi(v)

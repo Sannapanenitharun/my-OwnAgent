@@ -135,12 +135,121 @@ func encodeMetrics(resource []platform.Attr, gauges []platform.GaugePoint, count
 	})
 }
 
+// otlpStats reports what became of a received OTLP batch, so the outcome is a
+// number an operator can read rather than an absence they have to infer.
+type otlpStats struct {
+	Decoded     int // points, records or spans understood
+	Undecoded   int // payloads that would not parse as either wire format
+	Unsupported int // metric types this agent does not render
+	Sampled     int // spans dropped by trace sampling
+}
+
+// encodeOTLPMetrics renders OTLP metric payloads received from applications
+// into the SAME envelope the agent's own metrics use, so the intake, the store
+// and the fleet view need no new shape to understand them.
+//
+// The resource on the envelope is the HOST's -- it says which machine the
+// batch came from. The application's own resource attributes, service.name
+// above all, ride on each point, exactly as they do on a span.
+func encodeOTLPMetrics(resource []platform.Attr, payloads []platform.TracePayload, now time.Time) ([]byte, otlpStats) {
+	var (
+		all   otlpMetrics
+		stats otlpStats
+	)
+	for _, p := range payloads {
+		m, ok := decodeEitherFormat(p, metricsFromOTLPProto, metricsFromOTLPJSON)
+		if !ok {
+			stats.Undecoded++
+			continue
+		}
+		all.Gauges = append(all.Gauges, m.Gauges...)
+		all.Counters = append(all.Counters, m.Counters...)
+		all.Histograms = append(all.Histograms, m.Histograms...)
+		stats.Unsupported += m.Unsupported
+	}
+	stats.Decoded = all.points()
+	if all.points() == 0 {
+		return nil, stats
+	}
+	return mustJSON(envelope{
+		Schema:    payloadSchema,
+		Signal:    "metrics",
+		Timestamp: now.UTC().Format(time.RFC3339Nano),
+		Host:      hostID(resource),
+		Resource:  attrMap(resource),
+		Metrics: &metricsJSON{
+			Gauges:     all.Gauges,
+			Counters:   all.Counters,
+			Histograms: all.Histograms,
+		},
+	}), stats
+}
+
+// encodeOTLPLogs does for received log payloads what encodeOTLPMetrics does
+// for metrics.
+func encodeOTLPLogs(resource []platform.Attr, payloads []platform.TracePayload, now time.Time) ([]byte, otlpStats) {
+	var (
+		recs  []logJSON
+		stats otlpStats
+	)
+	for _, p := range payloads {
+		got, ok := decodeEitherFormat(p,
+			func(b []byte) ([]logJSON, bool) { return logsFromOTLPProto(b, now) },
+			func(b []byte) ([]logJSON, bool) { return logsFromOTLPJSON(b, now) },
+		)
+		if !ok {
+			stats.Undecoded++
+			continue
+		}
+		recs = append(recs, got...)
+	}
+	stats.Decoded = len(recs)
+	if len(recs) == 0 {
+		return nil, stats
+	}
+	return mustJSON(envelope{
+		Schema:    payloadSchema,
+		Signal:    "logs",
+		Timestamp: now.UTC().Format(time.RFC3339Nano),
+		Host:      hostID(resource),
+		Resource:  attrMap(resource),
+		Logs:      recs,
+	}), stats
+}
+
+// decodeEitherFormat tries the wire format the Content-Type claims, then the
+// other one. Neither header is trusted, for the reason encodeTraces gives: an
+// exporter that mislabels its body would otherwise have every record silently
+// discarded, and trying the second decoder costs one parse of a body that was
+// going to be thrown away.
+func decodeEitherFormat[T any](p platform.TracePayload, proto, jsonDec func([]byte) (T, bool)) (T, bool) {
+	first, second := proto, jsonDec
+	if isJSON(p.ContentType, p.Body) {
+		first, second = jsonDec, proto
+	}
+	if v, ok := first(p.Body); ok {
+		return v, true
+	}
+	return second(p.Body)
+}
+
 // encodeTraces renders a trace batch, dropping whole traces above the sample
 // rate. It returns the body and the number of spans sampled out.
+//
+// Callers must pass ONLY trace payloads. Routing happens in the exporter,
+// because the three OTLP request types are close enough on the wire that a
+// metrics body decodes into a span here -- see the gate in
+// decodeResourceSpans for what that produced.
 func encodeTraces(resource []platform.Attr, payloads []platform.TracePayload, now time.Time, rate float64) ([]byte, int) {
 	var spans []spanJSON
 	var raw []rawJSON
 	for _, p := range payloads {
+		if p.Signal != "" && p.Signal != "traces" {
+			// Defence in depth. The exporter routes by signal before calling
+			// this, so reaching here means a caller got it wrong; encoding the
+			// payload as a trace anyway is how metrics became spans.
+			continue
+		}
 		// Content-Type decides which decoder is tried first, but neither is
 		// trusted to be right: an exporter that mislabels its body would
 		// otherwise have every span silently shipped as opaque bytes. Trying

@@ -86,6 +86,10 @@
       "settings": {
         "interval": "2s",
         "paths": "/var/log/syslog,/var/log/auth.log,/var/log/cloud-init.log,/var/log/kern.log,/var/log/ubuntu-advantage.log",
+        "discover": "false",
+        "discover.roots": "/var/log",
+        "discover.interval": "60s",
+        "discover.max": "128",
         "disable.eventlog": "true"
       }
     },

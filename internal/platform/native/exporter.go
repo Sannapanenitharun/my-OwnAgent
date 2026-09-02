@@ -174,11 +174,16 @@ func (e *Exporter) EmitLog(rec platform.LogRecord) {
 	e.logs = append(e.logs, rec)
 }
 
+// IngestTraces accepts one received OTLP payload of ANY signal.
+//
+// It used to accept only traces and return early on anything else -- no
+// counter, no diagnostic, nothing retained. The receiver had already answered
+// 200 and incremented otel.receiver.accepted, so an application exporting
+// metrics or logs to this agent saw a healthy pipeline at both ends while its
+// telemetry was discarded here. Routing to the right encoder happens at flush;
+// the batch itself is signal-agnostic.
 func (e *Exporter) IngestTraces(payload platform.TracePayload) {
 	e.inner.IngestTraces(payload)
-	if payload.Signal != "" && payload.Signal != signalTraces {
-		return
-	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if len(e.traces) >= e.cfg.MaxBatch {
@@ -224,7 +229,7 @@ func (e *Exporter) flush(ctx context.Context) {
 	e.replaySpool(ctx)
 	e.exportMetrics(ctx, now)
 	e.exportLogs(ctx, now)
-	e.exportTraces(ctx, now)
+	e.exportReceived(ctx, now)
 	e.exportInventory(ctx, now)
 }
 
@@ -306,7 +311,14 @@ func (e *Exporter) exportLogs(ctx context.Context, now time.Time) {
 	e.post(ctx, signalLogs, body)
 }
 
-func (e *Exporter) exportTraces(ctx context.Context, now time.Time) {
+// exportReceived flushes everything applications sent to the OTLP receiver,
+// splitting the batch by signal and encoding each part with its own decoder.
+//
+// One batch holds all three signals because that is how they arrive -- one
+// receiver, one queue. Splitting here rather than at ingest keeps the drop
+// accounting in a single place and means a signal this agent learns to decode
+// later needs no change at the front door.
+func (e *Exporter) exportReceived(ctx context.Context, now time.Time) {
 	e.mu.Lock()
 	batch := e.traces
 	e.traces = nil
@@ -314,20 +326,82 @@ func (e *Exporter) exportTraces(ctx context.Context, now time.Time) {
 	if len(batch) == 0 {
 		return
 	}
-	rate := e.cfg.TraceSampleRate
-	if rate == 0 {
-		rate = sampleAll
+
+	bySignal := map[string][]platform.TracePayload{}
+	for _, p := range batch {
+		sig := p.Signal
+		if sig == "" {
+			sig = signalTraces
+		}
+		bySignal[sig] = append(bySignal[sig], p)
 	}
-	body, sampled := encodeTraces(e.cfg.Resource, batch, now, rate)
-	if sampled > 0 {
+
+	if traces := bySignal[signalTraces]; len(traces) > 0 {
+		rate := e.cfg.TraceSampleRate
+		if rate == 0 {
+			rate = sampleAll
+		}
+		body, sampled := encodeTraces(e.cfg.Resource, traces, now, rate)
+		if sampled > 0 {
+			e.mu.Lock()
+			e.sampledTraces += int64(sampled)
+			e.mu.Unlock()
+		}
+		if len(body) > 0 {
+			e.post(ctx, signalTraces, body)
+		}
+	}
+
+	if metrics := bySignal[signalMetrics]; len(metrics) > 0 {
+		body, stats := encodeOTLPMetrics(e.cfg.Resource, metrics, now)
+		e.noteOTLP(signalMetrics, stats)
+		if len(body) > 0 {
+			e.post(ctx, signalMetrics, body)
+		}
+	}
+
+	if logs := bySignal[signalLogs]; len(logs) > 0 {
+		body, stats := encodeOTLPLogs(e.cfg.Resource, logs, now)
+		e.noteOTLP(signalLogs, stats)
+		if len(body) > 0 {
+			e.post(ctx, signalLogs, body)
+		}
+	}
+
+	// Anything else an SDK invents: counted, not silently dropped.
+	for sig, payloads := range bySignal {
+		switch sig {
+		case signalTraces, signalMetrics, signalLogs:
+			continue
+		}
+		e.inner.Counter("agent.export.otlp_unrouted").Add(int64(len(payloads)),
+			platform.A("signal", sig), platform.A("exporter", "native"))
 		e.mu.Lock()
-		e.sampledTraces += int64(sampled)
+		e.droppedExport += int64(len(payloads))
 		e.mu.Unlock()
 	}
-	if len(body) == 0 {
-		return
+}
+
+// noteOTLP publishes what a decode run made of its batch. An operator chasing
+// telemetry that never arrived needs to tell "the agent could not read it"
+// from "the application never sent it", and only the first of those is
+// visible from here.
+func (e *Exporter) noteOTLP(signal string, stats otlpStats) {
+	if stats.Decoded > 0 {
+		e.inner.Counter("agent.export.otlp_decoded").Add(int64(stats.Decoded),
+			platform.A("signal", signal), platform.A("exporter", "native"))
 	}
-	e.post(ctx, signalTraces, body)
+	if stats.Undecoded > 0 {
+		e.inner.Counter("agent.export.otlp_undecoded").Add(int64(stats.Undecoded),
+			platform.A("signal", signal), platform.A("exporter", "native"))
+		e.mu.Lock()
+		e.droppedExport += int64(stats.Undecoded)
+		e.mu.Unlock()
+	}
+	if stats.Unsupported > 0 {
+		e.inner.Counter("agent.export.otlp_unsupported").Add(int64(stats.Unsupported),
+			platform.A("signal", signal), platform.A("exporter", "native"))
+	}
 }
 
 func (e *Exporter) post(ctx context.Context, signal string, body []byte) {

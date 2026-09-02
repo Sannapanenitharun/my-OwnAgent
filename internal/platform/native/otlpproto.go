@@ -122,9 +122,25 @@ func decodeResourceSpans(b []byte, out *[]spanJSON) bool {
 			if !ok {
 				return false
 			}
-			if sp.TraceID == "" && sp.SpanID == "" {
-				// Not addressable and not correlatable with anything: noise in
-				// the list rather than a trace.
+			if sp.TraceID == "" || sp.SpanID == "" {
+				// BOTH IDs are mandatory in OTLP, and this insists on both
+				// rather than either.
+				//
+				// The weaker "neither is set" test is what let an OTLP
+				// METRICS body decode into spans. The three OTLP request
+				// types share field numbers the whole way down --
+				// resource_* is 1, scope_* is 2, the inner list is 2 -- and
+				// Metric.name is field 1 of type bytes, which is the slot
+				// Span.trace_id occupies. A metric named system.cpu.time
+				// therefore parsed, cleanly, into a span whose trace ID was
+				// hex("system.cpu.time") and whose every other field was
+				// empty. It passed the old gate on the strength of that one
+				// fabricated ID.
+				//
+				// Routing by signal (see encodeOTLP) is the primary fix.
+				// This is the second one, because a decoder that cannot tell
+				// a metric from a span should not be the only thing standing
+				// between the two.
 				return true
 			}
 			*out = append(*out, sp)
@@ -240,23 +256,40 @@ func decodeKeyValue(b []byte) (string, string, bool) {
 		case field == fieldKeyValueKey && wire == wireBytes:
 			key = string(val)
 		case field == fieldKeyValueValue && wire == wireBytes:
-			return walkProto(val, func(f, w int, v []byte, n uint64) bool {
-				switch {
-				case f == fieldAnyValueString && w == wireBytes:
-					value = string(v)
-				case f == fieldAnyValueBool && w == wireVarint:
-					value = strconv.FormatBool(n != 0)
-				case f == fieldAnyValueInt && w == wireVarint:
-					value = strconv.FormatInt(int64(n), 10)
-				case f == fieldAnyValueDouble && w == wireI64:
-					value = strconv.FormatFloat(math.Float64frombits(n), 'g', -1, 64)
-				}
-				return true
-			})
+			v, ok := decodeAnyValue(val)
+			if !ok {
+				return false
+			}
+			value = v
 		}
 		return true
 	})
 	return key, value, ok
+}
+
+// decodeAnyValue renders an AnyValue as a string. Attribute values, and a log
+// record's body, are the same type in OTLP, so they decode the same way.
+//
+// Composite values (array, kvlist) are deliberately not rendered: flattening
+// them here would invent a representation the sender never chose, and every
+// consumer downstream takes a string. They decode as empty, which the callers
+// treat as "no value" rather than as a parse failure.
+func decodeAnyValue(b []byte) (string, bool) {
+	value := ""
+	ok := walkProto(b, func(f, w int, v []byte, n uint64) bool {
+		switch {
+		case f == fieldAnyValueString && w == wireBytes:
+			value = string(v)
+		case f == fieldAnyValueBool && w == wireVarint:
+			value = strconv.FormatBool(n != 0)
+		case f == fieldAnyValueInt && w == wireVarint:
+			value = strconv.FormatInt(int64(n), 10)
+		case f == fieldAnyValueDouble && w == wireI64:
+			value = strconv.FormatFloat(math.Float64frombits(n), 'g', -1, 64)
+		}
+		return true
+	})
+	return value, ok
 }
 
 // walkProto iterates the fields of one protobuf message, calling fn for each.

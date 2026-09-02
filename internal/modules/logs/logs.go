@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -359,6 +360,14 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 		}
 		if id := dockerContainerID(rec.File); id != "" {
 			attrs = append(attrs, platform.A("container_id", id))
+		}
+		// Attribution from discovery: this line came from a file the named
+		// process holds open for writing. It is established by HOW the file
+		// was found, not guessed from the path or the content.
+		if rec.Process != "" && rec.PID > 0 {
+			attrs = append(attrs,
+				platform.A("process", rec.Process),
+				platform.A("pid", strconv.Itoa(rec.PID)))
 		}
 		if stream != "" {
 			attrs = append(attrs, platform.A("stream", stream))

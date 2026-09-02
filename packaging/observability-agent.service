@@ -10,10 +10,80 @@ EnvironmentFile=-/etc/observability-agent/agent.env
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=40s
-# Collection is least-privilege. Do not run as root unless a later module
-# requires it; host/process/logs readers use world-readable OS interfaces.
-User=root
 LimitNOFILE=65536
+
+# ---------------------------------------------------------------------------
+# Privilege
+#
+# The agent runs as root, and the honest reason is /proc: reading another
+# user's /proc/<pid>/io, /proc/<pid>/fd and /proc/<pid>/ns/net requires more
+# than an unprivileged account has. An earlier version of this file carried a
+# comment saying not to run as root directly above User=root, which was a
+# contradiction rather than a policy.
+#
+# So root it is, and everything below narrows what root means here. This is
+# the same shape both commercial agents use -- a privileged collector with the
+# bounding set cut to what it actually reads.
+User=root
+
+# Only the capabilities the collectors need:
+#   DAC_READ_SEARCH  read /proc/<pid>/{io,fd} and journal files owned by others
+#   DAC_OVERRIDE     the optional Docker socket, and a few /proc paths
+#   SYS_PTRACE       readlink /proc/<pid>/ns/net and /proc/<pid>/exe
+#
+# Deliberately ABSENT: CAP_BPF, CAP_PERFMON and CAP_SYS_ADMIN. Nothing here
+# loads eBPF, and if that ever changes it should be a reviewed edit to this
+# line rather than a capability that was already lying around.
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE CAP_SYS_PTRACE
+AmbientCapabilities=
+NoNewPrivileges=true
+
+# ---------------------------------------------------------------------------
+# Filesystem
+#
+# strict makes the whole hierarchy read-only except what is named below. The
+# agent writes exactly one thing: the export spool, which holds payloads that
+# failed to post until the circuit closes again.
+ProtectSystem=strict
+StateDirectory=observability-agent
+ReadWritePaths=/var/lib/observability-agent
+
+# read-only rather than true: a process's executable path or an open file can
+# legitimately live under /home, and the process module resolves both.
+ProtectHome=read-only
+PrivateTmp=true
+
+# ---------------------------------------------------------------------------
+# Kernel and process visibility
+#
+# DO NOT set ProtectProc=invisible or ProcSubset=pid here. Both are standard
+# hardening for an ordinary service and both would break this one outright:
+# the first hides every process the agent exists to measure, the second hides
+# /proc/meminfo, /proc/stat and /proc/net. They are pinned to their permissive
+# values so that a later hardening pass has to argue with a comment rather
+# than silently blind the collectors.
+ProtectProc=default
+ProcSubset=all
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+# read-only, not inaccessible: container metrics come from cgroupfs.
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# AF_NETLINK is not optional: the host module takes one netlink dump for link
+# state instead of a sysfs read per interface.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target

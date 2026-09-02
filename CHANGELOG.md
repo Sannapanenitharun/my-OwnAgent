@@ -4,6 +4,73 @@ All notable changes to the observability agent. Each stage is a phase gate: the
 stage is not complete until the code is production quality, measured, and its
 limitations are recorded.
 
+## Unreleased - OTLP signal routing, log discovery, service hardening
+
+Three items from the gap analysis against Datadog and Dynatrace collection
+methods, in severity order.
+
+### Fixed
+
+- **Received OTLP metrics and logs were silently discarded.** The receiver
+  served `/v1/metrics` and `/v1/logs`, answered 200, and incremented
+  `otel.receiver.accepted`; the native exporter then dropped every non-trace
+  payload in `IngestTraces` with no counter and no diagnostic. An application
+  exporting to the agent saw a healthy pipeline at both ends while its
+  telemetry went nowhere. Payloads are now decoded and routed per signal into
+  the same envelopes host telemetry uses, so the intake and fleet view render
+  them with no downstream change.
+- **The span decoder could turn a metric into a span.** OTLP's three request
+  types share field numbers all the way down, and `Metric.name` is field 1 of
+  type bytes -- the slot `Span.trace_id` occupies. A metrics body therefore
+  parsed cleanly into a span whose trace ID was the metric's name in hex, and
+  the old "reject only if BOTH IDs are empty" gate admitted it. Both IDs are
+  now required, and `encodeTraces` refuses a non-trace signal outright.
+
+### Added
+
+- **OTLP metric and log decoders** (`internal/platform/native/otlpmetrics.go`,
+  `otlplogs.go`) -- protobuf and JSON, no third-party dependency. Gauges, sums
+  (monotonic to counters, non-monotonic to gauges) and histograms reduced to
+  count/sum/min/max; exponential histograms and summaries are counted as
+  unsupported rather than approximated. Resource attributes ride on each point
+  and record, so `service.name` survives.
+- **`agent.export.otlp_decoded` / `otlp_undecoded` / `otlp_unsupported` /
+  `otlp_unrouted`** -- the outcome of a decode run is now a number. An operator
+  chasing missing telemetry can tell "the agent could not read it" from "the
+  application never sent it".
+- **Log discovery through `/proc/<pid>/fd`** (`logs` setting `discover`, off by
+  default) -- finds log files by asking which ones processes hold open for
+  writing, which establishes the file and its owning process in one step.
+  Lines carry `process` and `pid` attributes. Candidate paths are checked
+  against an allow-list of roots (`/var/log` by default) BEFORE anything opens
+  them: the paths come from whatever processes have open, which is
+  attacker-influenced input.
+
+### Changed
+
+- **`packaging/observability-agent.service` is hardened.** The unit previously
+  set `User=root` directly beneath a comment saying not to run as root. Root
+  stays -- reading another user's `/proc/<pid>/{io,fd,ns}` requires it -- and
+  is now bounded: `CapabilityBoundingSet` cut to `CAP_DAC_READ_SEARCH`,
+  `CAP_DAC_OVERRIDE`, `CAP_SYS_PTRACE`, plus `ProtectSystem=strict`,
+  `NoNewPrivileges`, seccomp and address-family restrictions.
+  `ProtectProc=default` and `ProcSubset=all` are pinned with a comment
+  explaining that the usual hardening values for both would blind the
+  collectors outright.
+
+### Known limitation
+
+- **Journald records still carry no process attribution.** The gap analysis
+  estimated this at 1-2 days on the assumption that `_PID` and `_COMM` were
+  already in the bytes being scanned. They are in the file, but journal DATA
+  objects are deduplicated and shared across entries, so a byte scan cannot
+  say which message a given `_COMM=` belongs to -- associating them requires
+  parsing ENTRY objects and following their items array. Shipping a proximity
+  heuristic would produce confident wrong attribution, which is worse than
+  none. Log discovery above delivers the same outcome soundly for file-based
+  logs.
+
+
 ## Unreleased — native exporter, OTLP, logs, traces, richer AWS identity
 
 The agent can be installed on EC2 and ship telemetry either through its own

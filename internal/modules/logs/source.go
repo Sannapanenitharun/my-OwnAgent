@@ -9,6 +9,14 @@ type Record struct {
 	Source  Source
 	File    string
 	Channel string
+
+	// PID and Process name the process that holds this file open for
+	// writing, when the file was found by discovery rather than by
+	// configuration. Set together or not at all: attribution that is only
+	// half known is worse than none, because a PID with no name reads as a
+	// number nobody can look up.
+	PID     int
+	Process string
 }
 
 // Reader is one log source. A platform that cannot provide it is absent from
