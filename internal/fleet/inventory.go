@@ -74,8 +74,18 @@ type InventoryItem struct {
 	// zero, so the view cannot tell "sent nothing" from "has no traffic of its
 	// own to report". The distinction is the whole reason the agent leaves the
 	// series absent rather than emitting zero.
-	NetMeasured bool    `json:"net_measured,omitempty"`
-	Count       float64 `json:"count,omitempty"`
+	NetMeasured bool `json:"net_measured,omitempty"`
+
+	// Application detail. The process module already collects all of this per
+	// executable; the tab was showing three of the eight things it ships and
+	// discarding the rest, which is the same waste as never collecting them.
+	Threads   float64 `json:"threads,omitempty"`
+	OpenFiles float64 `json:"open_files,omitempty"`
+	VirtBytes float64 `json:"virt_bytes,omitempty"`
+	IORead    float64 `json:"io_read,omitempty"`
+	IOWrite   float64 `json:"io_write,omitempty"`
+
+	Count float64 `json:"count,omitempty"`
 }
 
 // Relation is one edge of the host's topology, with both endpoints resolved to
@@ -289,7 +299,8 @@ func (ix appIndex) covers(name string) bool {
 // bounds their cardinality.
 func (s *Store) applicationsLocked(h *host) []InventoryItem {
 	type proc struct {
-		cpu, mem, count float64
+		cpu, mem, count                           float64
+		threads, openFiles, virt, ioRead, ioWrite float64
 	}
 	byExe := map[string]*proc{}
 	get := func(attrs map[string]string) *proc {
@@ -329,6 +340,20 @@ func (s *Store) applicationsLocked(h *host) []InventoryItem {
 			p.mem += ser.value
 		case "process.instances":
 			p.count += ser.value
+		// Everything below was already being shipped and thrown away.
+		// Summed, not averaged: the row stands for every instance of the
+		// executable, so "java is holding 812 file descriptors" is the fact an
+		// operator is chasing, not the mean per process.
+		case "process.thread.count":
+			p.threads += ser.value
+		case "process.open_files":
+			p.openFiles += ser.value
+		case "process.memory.virtual":
+			p.virt += ser.value
+		case "process.io.read_bytes":
+			p.ioRead += ser.value
+		case "process.io.write_bytes":
+			p.ioWrite += ser.value
 		}
 	}
 
@@ -344,6 +369,8 @@ func (s *Store) applicationsLocked(h *host) []InventoryItem {
 		out = append(out, InventoryItem{
 			Kind: "process", Name: name, Detail: detail,
 			CPU: p.cpu, Memory: p.mem, Count: p.count,
+			Threads: p.threads, OpenFiles: p.openFiles, VirtBytes: p.virt,
+			IORead: p.ioRead, IOWrite: p.ioWrite,
 		})
 	}
 	return out

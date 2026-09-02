@@ -1071,6 +1071,102 @@ function topoSelect(key) {
   renderTopology();
 }
 
+// ---- Application drawer ------------------------------------------------
+//
+// The Applications tab answers "what is running and how big is it". The
+// question after that is about ONE program: what has it got open, what is it
+// talking to, what did it log. All of that is already collected -- the ports
+// it owns are in the topology, its lines are in the log ring -- and until now
+// none of it met the row that names it.
+
+var adOpen = null;
+
+// adSeries finds a series for one executable. The process module keys on the
+// executable attribute, which is also the row's name.
+function adSeries(name, exe) {
+  if (!detail || !exe) return null;
+  var hit = null;
+  (detail.metrics || []).forEach(function (m) {
+    if (m.name === name && m.attrs && m.attrs.executable === exe) hit = m;
+  });
+  return hit;
+}
+
+function openApp(name) {
+  var list = (detail && detail.inventory && detail.inventory.processes) || [];
+  var it = null;
+  list.forEach(function (a) { if (a.name === name) it = a; });
+  if (!it) return;
+  adOpen = name;
+  document.getElementById("cdrawer").hidden = false;
+  document.getElementById("cdrawer-scrim").hidden = false;
+  renderAppDrawer(it);
+  document.getElementById("cd-close").focus();
+}
+
+function renderAppDrawer(it) {
+  document.getElementById("cd-name").textContent = it.name;
+  document.getElementById("cd-sub").textContent =
+    (it.count || 1) + (it.count === 1 ? " instance" : " instances") + " on this host";
+
+  var html = "";
+  html += '<section class="cd-sec"><h4>Resource use</h4><div class="cd-stat">' +
+    '<div><div class="n">' + (it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "—") + '</div><div class="l">CPU</div></div>' +
+    '<div><div class="n">' + (it.memory ? bytes(it.memory) : "—") + '</div><div class="l">RSS</div></div>' +
+    '<div><div class="n">' + (it.threads ? num(it.threads) : "—") + '</div><div class="l">Threads</div></div>' +
+    '<div><div class="n">' + (it.open_files ? num(it.open_files) : "—") + '</div><div class="l">Open files</div></div>' +
+    "</div>" + cdKV([
+      ["Virtual", it.virt_bytes ? bytes(it.virt_bytes) : ""],
+      ["Disk read", it.io_read ? bytes(it.io_read) : ""],
+      ["Disk written", it.io_write ? bytes(it.io_write) : ""]
+    ]) + "</section>";
+
+  // Ports it owns. This is the closest thing to "application network" the
+  // kernel offers without eBPF: socket inodes name the owning process, so we
+  // can say WHAT it listens on, but not how many bytes crossed it.
+  var edges = ((detail && detail.inventory && detail.inventory.topology) || []).filter(function (e) {
+    return e.type === "endpoint_owned_by" && e.to === it.name;
+  });
+  html += '<section class="cd-sec"><h4>Listening on (' + edges.length + ")</h4>";
+  html += edges.length
+    ? edges.map(function (e) {
+        return '<div class="cd-log"><span class="mono">' + esc(e.from) + "</span></div>";
+      }).join("")
+    : '<p class="cd-empty">No listening sockets attributed to this program. ' +
+      "Byte counts per process are not available from the kernel without eBPF; " +
+      "the ports it owns are, and there are none.</p>";
+  html += "</section>";
+
+  // Services it runs, from the same topology.
+  var svcs = ((detail && detail.inventory && detail.inventory.topology) || []).filter(function (e) {
+    return e.type === "runs_service" && e.from === it.name;
+  });
+  if (svcs.length) {
+    html += '<section class="cd-sec"><h4>Services (' + svcs.length + ")</h4>" +
+      svcs.map(function (e) {
+        return '<div class="cd-log"><span class="mono">' + esc(e.to) + "</span>" +
+          (e.role ? ' <span class="pill">' + esc(e.role) + "</span>" : "") + "</div>";
+      }).join("") + "</section>";
+  }
+
+  var logs = ((detail && detail.logs) || []).filter(function (l) {
+    var o = (l.source || "") + " " + (l.file || "");
+    return o.indexOf(it.name) >= 0;
+  }).slice(-20).reverse();
+  html += '<section class="cd-sec"><h4>Recent logs (' + logs.length + ")</h4>";
+  html += logs.length
+    ? logs.map(function (l) {
+        return '<div class="cd-log"><time>' + esc(new Date(l.time).toLocaleTimeString()) +
+          "</time>" + severityPill(l.status, l.stream) + "<span>" + esc(l.message) + "</span></div>";
+      }).join("")
+    : '<p class="cd-empty">No log lines attributed to this program. Log records ' +
+      "carry a container id or a file, not a PID, so only what a program writes " +
+      "to a path or unit the agent reads can be traced back to it.</p>";
+  html += "</section>";
+
+  document.getElementById("cd-body").innerHTML = html;
+}
+
 // ---- Container drawer -------------------------------------------------
 //
 // The table answers "what is running"; this answers "what is this one doing".
@@ -1116,6 +1212,7 @@ function openContainer(cid) {
 
 function closeContainer() {
   cdOpen = null;
+  adOpen = null;
   document.getElementById("cdrawer").hidden = true;
   document.getElementById("cdrawer-scrim").hidden = true;
 }
@@ -1220,6 +1317,11 @@ function renderInventory() {
   });
 
   // A refresh must not blank an open drawer, and must show the new numbers.
+  if (adOpen) {
+    var app = null;
+    ((inv.processes) || []).forEach(function (a) { if (a.name === adOpen) app = a; });
+    if (app) renderAppDrawer(app); else closeContainer();
+  }
   if (cdOpen) {
     var still = null;
     ((inv.containers) || []).forEach(function (c) { if (c.id === cdOpen) still = c; });
@@ -1289,12 +1391,20 @@ function renderInvTable(list) {
     // containerd-shim row stands for twenty-one processes and the docker-proxy
     // row for fifty, so any single PID beside it would be a lie. PID belongs
     // on Services and Endpoints, where there is exactly one.
-    head.innerHTML = "<tr><th>Application</th><th>Instances</th><th>CPU</th><th>Memory (RSS)</th></tr>";
+    // Threads, file descriptors and I/O were already being collected and
+    // thrown away here. The row is per executable, so these are sums across
+    // its instances -- "java is holding 812 descriptors" is the fact an
+    // operator chases, not the mean per process.
+    head.innerHTML = "<tr><th>Application</th><th>Instances</th><th>CPU</th><th>Memory (RSS)</th>" +
+      "<th>Threads</th><th>Open files</th><th>Disk I/O</th></tr>";
     body.innerHTML = list.map(function (it) {
-      return '<tr><td class="mono">' + esc(it.name) + "</td>" +
+      return '<tr class="clickable" data-app="' + esc(it.name) + '"><td class="mono">' + esc(it.name) + "</td>" +
         '<td class="mono">' + (it.count ? num(it.count) : "-") + "</td>" +
         '<td class="mono">' + (it.cpu ? (it.cpu * 100).toFixed(1) + "%" : "-") + "</td>" +
-        '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td></tr>";
+        '<td class="mono">' + (it.memory ? bytes(it.memory) : "-") + "</td>" +
+        '<td class="mono">' + (it.threads ? num(it.threads) : "-") + "</td>" +
+        '<td class="mono">' + (it.open_files ? num(it.open_files) : "-") + "</td>" +
+        '<td class="mono" style="white-space:nowrap">' + ioCell(it) + "</td></tr>";
     }).join("");
     return;
   }
@@ -1434,6 +1544,15 @@ function traceMark(l) {
   return '<span class="tracemark" data-trace="' + esc(l.trace_id) + '" title="' +
     esc("trace " + l.trace_id + (l.span_id ? "  span " + l.span_id : "")) +
     '">trace</span> ';
+}
+
+// ioCell renders an application's disk traffic. This is /proc/<pid>/io, which
+// counts bytes the process read and wrote through the syscall layer -- it is
+// NOT network, and labelling it so would be a lie an operator would act on.
+function ioCell(it) {
+  if (!it.io_read && !it.io_write) return '<span style="color:var(--muted)">-</span>';
+  return '<span title="read">' + bytes(it.io_read || 0) + "</span> " +
+    '<span title="written" style="color:var(--muted)">' + bytes(it.io_write || 0) + "</span>";
 }
 
 // netCell renders a container's traffic in and out.
@@ -1642,12 +1761,14 @@ document.getElementById("topo-svg").addEventListener("click", function (e) {
 
 document.getElementById("inv-table").addEventListener("click", function (e) {
   var row = e.target.closest("tr.clickable");
-  if (row && row.dataset.cid) openContainer(row.dataset.cid);
+  if (!row) return;
+  if (row.dataset.cid) openContainer(row.dataset.cid);
+  else if (row.dataset.app) openApp(row.dataset.app);
 });
 document.getElementById("cd-close").addEventListener("click", closeContainer);
 document.getElementById("cdrawer-scrim").addEventListener("click", closeContainer);
 document.addEventListener("keydown", function (e) {
-  if (e.key === "Escape" && cdOpen) closeContainer();
+  if (e.key === "Escape" && (cdOpen || adOpen)) closeContainer();
 });
 // The canvases are sized by their container, so a resize needs a redraw here
 // too, not only on the metrics view.
