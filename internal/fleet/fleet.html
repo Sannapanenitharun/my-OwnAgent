@@ -296,10 +296,14 @@
           </div>
         </div>
         <div class="chart-grid" id="charts"></div>
-        <p class="map">Charts use live agent series (<span class="mono">host.cpu.*</span>,
+        <p class="map">The first four charts are host series (<span class="mono">host.cpu.*</span>,
           <span class="mono">host.memory.*</span>, <span class="mono">host.network.*</span>,
-          <span class="mono">host.load.*</span>). History accumulates in the intake, so it survives
-          this page being closed.</p>
+          <span class="mono">host.load.*</span>). Charts after them are built from whatever else
+          arrived with history — application metrics received over OTLP, and the agent's own
+          <span class="mono">httpcheck.*</span> and <span class="mono">agent.export.*</span> series.
+          A series earns history once it has reported twice, and application metrics draw on a
+          budget of their own so a chatty service cannot blank the host charts. History
+          accumulates in the intake, so it survives this page being closed.</p>
         <p class="hint" style="margin-top:16px">Raw series table</p>
         <div class="chips" id="metric-chips">
           <button type="button" class="chip active" data-prefix="host.">Host</button>
@@ -576,18 +580,69 @@ function drawChart(card, spec, series) {
   return legend.join("");
 }
 
+/* Charts beyond the fixed host set.
+ *
+ * The four specs above are hand-written because their shape is known: CPU is a
+ * percentage split by state, network is bytes by device. Application metrics
+ * have no such shape -- the agent learns their names when an application first
+ * exports them -- so these cards are built from whatever arrived with a
+ * history ring. The intake only grants a ring to a series that reported twice
+ * and fitted its budget, so this list is already bounded before it gets here.
+ */
+var APP_CHART_MAX = 12;
+
+function appChartSpecs(metrics) {
+  var byName = {};
+  metrics.forEach(function (m) {
+    if (!m.history || m.history.length < 2) return;
+    if (/^host\./.test(m.name)) return;
+    if (/^container\.instance\.(memory_bytes|cpu_utilization)$/.test(m.name)) return;
+    (byName[m.name] = byName[m.name] || []).push(m);
+  });
+  return Object.keys(byName).sort().slice(0, APP_CHART_MAX).map(function (name) {
+    var group = byName[name];
+    return { title: name, series: group, label: varyingKey(group), scale: 1 };
+  });
+}
+
+/* varyingKey picks the label that actually distinguishes the lines in a card.
+ *
+ * Series sharing a metric name differ by exactly one thing that matters --
+ * route, status code, queue -- and which one it is varies per metric. Guessing
+ * a fixed key would legend every line identically; finding the key whose value
+ * differs names them by the thing that separates them. */
+function varyingKey(series) {
+  if (series.length < 2) return "";
+  var keys = {};
+  series.forEach(function (s) { for (var k in (s.attrs || {})) keys[k] = true; });
+  var names = Object.keys(keys).sort();
+  for (var i = 0; i < names.length; i++) {
+    var vals = {}, n = 0;
+    for (var j = 0; j < series.length; j++) {
+      var v = (series[j].attrs || {})[names[i]] || "";
+      if (!(v in vals)) { vals[v] = true; n++; }
+    }
+    if (n > 1) return names[i];
+  }
+  return "";
+}
+
 function renderCharts() {
   var box = document.getElementById("charts");
   if (!detail) { box.innerHTML = ""; return; }
-  box.innerHTML = CHARTS.map(function (c, i) {
+  var specs = CHARTS.map(function (c) {
+    return {
+      title: c.title, label: c.label, scale: c.scale,
+      series: detail.metrics.filter(function (m) { return c.match.test(m.name); })
+    };
+  }).concat(appChartSpecs(detail.metrics));
+  box.innerHTML = specs.map(function (c, i) {
     return '<div class="chart-card" data-chart="' + i + '"><h3>' + esc(c.title) +
       '</h3><canvas></canvas><div class="legend"></div></div>';
   }).join("");
-  CHARTS.forEach(function (spec, i) {
+  specs.forEach(function (spec, i) {
     var card = box.querySelector('[data-chart="' + i + '"]');
-    var series = detail.metrics.filter(function (m) { return spec.match.test(m.name); });
-    var legend = drawChart(card, spec, series);
-    card.querySelector(".legend").innerHTML = legend;
+    card.querySelector(".legend").innerHTML = drawChart(card, spec, spec.series);
   });
 }
 

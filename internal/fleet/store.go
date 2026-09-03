@@ -21,16 +21,17 @@ import (
 
 // Limits bound what one Store may retain. Zero values fall back to defaults.
 type Limits struct {
-	Hosts            int           // distinct hosts before the stalest is evicted
-	SeriesPerHost    int           // latest-value series kept per host
-	HistorySeries    int           // host.* series that also keep a sample ring
-	HistoryPoints    int           // samples per history series
-	LogsPerHost      int           // recent log lines kept per host
-	SpansPerHost     int           // recent spans kept per host
-	EntitiesPerHost  int           // discovered entities kept per host
-	RelationsPerHost int           // topology edges kept per host
-	StaleAfter       time.Duration // silence before a host is reported stale
-	SeriesStaleAfter time.Duration // silence before a series is treated as gone
+	Hosts              int           // distinct hosts before the stalest is evicted
+	SeriesPerHost      int           // latest-value series kept per host
+	HistorySeries      int           // core (host.*, container gauge) series that keep a sample ring
+	HistorySeriesExtra int           // application/other series that keep a sample ring
+	HistoryPoints      int           // samples per history series
+	LogsPerHost        int           // recent log lines kept per host
+	SpansPerHost       int           // recent spans kept per host
+	EntitiesPerHost    int           // discovered entities kept per host
+	RelationsPerHost   int           // topology edges kept per host
+	StaleAfter         time.Duration // silence before a host is reported stale
+	SeriesStaleAfter   time.Duration // silence before a series is treated as gone
 }
 
 func (l Limits) withDefaults() Limits {
@@ -56,6 +57,22 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.HistorySeries <= 0 {
 		l.HistorySeries = 256
+	}
+	// A SECOND, separate budget rather than a bigger shared one.
+	//
+	// Application metric names and label sets are unbounded -- that is the
+	// difference between them and host.*, where the agent decides what exists.
+	// One service emitting a route label per URL can produce thousands of
+	// series in a burst. Sharing a budget would let that burst take the slots
+	// the overview charts depend on, and "the CPU chart went blank because a
+	// service got chatty" is a bad trade at any size.
+	//
+	// Two counters make that structurally impossible instead of a matter of
+	// tuning. The arithmetic: a ring is HistoryPoints x sizeof(Sample), about
+	// 3.8 KB at the defaults, so this doubles the worst case per host from
+	// roughly 1 MB to 2 MB.
+	if l.HistorySeriesExtra <= 0 {
+		l.HistorySeriesExtra = 256
 	}
 	if l.HistoryPoints <= 0 {
 		l.HistoryPoints = 120
@@ -113,10 +130,12 @@ type host struct {
 	// uncharted series, and scanning all of them there is quadratic in the
 	// series count on a host with many containers.
 	historySeries int
-	entities      map[string]*entity
-	relations     map[string]*relation
-	logs          *logRing
-	spans         *spanRing
+	// historyExtra counts rings held by non-core series, against its own cap.
+	historyExtra int
+	entities     map[string]*entity
+	relations    map[string]*relation
+	logs         *logRing
+	spans        *spanRing
 }
 
 type series struct {
@@ -125,6 +144,10 @@ type series struct {
 	value   float64
 	updated time.Time
 	history []Sample
+	// seen counts observations. It exists to answer one question about
+	// non-core series -- has this one ever reported twice? -- which is the
+	// cheapest available test for "worth drawing"; see observeLocked.
+	seen int
 }
 
 // envelope mirrors the obsagent.v1 wire shape. The fleet store parses the body
@@ -316,21 +339,45 @@ func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time) {
 	ser.value = m.Value
 	ser.updated = ts
 
-	// History feeds the charts: host.* on the overview, container.instance.*
-	// on the per-container panel. Nothing else is charted.
-	//
-	// process.* stays excluded on purpose. It is keyed per executable, so a
-	// host running a few hundred programs would multiply the sample ring by
-	// that count for charts nothing draws. Containers are bounded by the
-	// collector's max_containers, and the HistorySeries cap catches the tail.
-	if !isChartable(m.Name) {
+	ser.seen++
+
+	// History feeds the charts. Which budget a series draws on depends on
+	// what kind of series it is; see chartClassOf.
+	switch chartClassOf(m.Name) {
+	case chartNone:
 		return
-	}
-	if len(ser.history) == 0 {
-		if h.historySeries >= s.limits.HistorySeries {
-			return
+
+	case chartCore:
+		if len(ser.history) == 0 {
+			if h.historySeries >= s.limits.HistorySeries {
+				return
+			}
+			h.historySeries++
 		}
-		h.historySeries++
+
+	case chartExtra:
+		if len(ser.history) == 0 {
+			// A series must report TWICE before it earns a ring.
+			//
+			// This is the cardinality guard, and it is aimed at one specific
+			// failure: a label that is unique per request -- an order ID in a
+			// route, a request ID, a trace ID that leaked into an attribute.
+			// Those series are each seen exactly once, so first-come budgeting
+			// would let a single burst take every slot and hold it until the
+			// staleness sweep, starving the recurring series that are actually
+			// worth drawing.
+			//
+			// A series that has reported twice is, by the only evidence
+			// available here, recurring. It costs one sample of delay before a
+			// chart starts, which is invisible next to a 120-point ring.
+			if ser.seen < 2 {
+				return
+			}
+			if h.historyExtra >= s.limits.HistorySeriesExtra {
+				return
+			}
+			h.historyExtra++
+		}
 	}
 	ser.history = append(ser.history, Sample{Time: ts, Value: m.Value})
 	if over := len(ser.history) - s.limits.HistoryPoints; over > 0 {
@@ -338,23 +385,56 @@ func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time) {
 	}
 }
 
-// isChartable reports whether a metric earns a sample ring.
+// chartClass says which history budget a series draws on, if any.
+type chartClass int
+
+const (
+	// chartNone earns no sample ring.
+	chartNone chartClass = iota
+	// chartCore is the fixed set the overview draws: host.* and the two
+	// container instance gauges. Reserved budget, charted from first sight,
+	// never reclaimed while it keeps reporting.
+	chartCore
+	// chartExtra is everything else worth drawing -- application metrics
+	// received over OTLP, and the agent's own httpcheck and export series.
+	// Separate budget, and must prove recurring first.
+	chartExtra
+)
+
+// chartClassOf classifies a metric name.
 //
-// The container list is exact rather than a prefix. container.instance.* also
-// holds the cumulative network counters, and those are shown as totals, not
-// drawn: giving them rings would spend two history slots per container on
-// charts nothing renders, which is the same waste the process.* exclusion
-// exists to avoid. A rising cumulative line is a poor chart in any case --
-// the useful form is a rate, and that is not what is stored here.
-func isChartable(name string) bool {
+// This used to be isChartable, which answered yes only for host.* and two
+// container gauges. That was right while the only metrics in the store were
+// ones the agent itself decided to collect. It stopped being right when the
+// OTLP receiver began decoding application metrics: an application's series
+// arrived, was stored, showed a current value, and could never be drawn -- so
+// "request latency is climbing" was a fact the store held and could not show.
+//
+// Splitting the answer in two, rather than widening the yes, is what keeps the
+// overview safe. Application names and label sets are unbounded; host.* is
+// not. They must not compete for the same slots.
+func chartClassOf(name string) chartClass {
 	if strings.HasPrefix(name, "host.") {
-		return true
+		return chartCore
 	}
 	switch name {
 	case "container.instance.memory_bytes", "container.instance.cpu_utilization":
-		return true
+		return chartCore
 	}
-	return false
+
+	// process.* stays excluded on purpose, and for the original reason: it is
+	// keyed per executable, so a host running a few hundred programs would
+	// multiply the sample ring by that count for charts nothing draws.
+	if strings.HasPrefix(name, "process.") {
+		return chartNone
+	}
+	// The container network counters are cumulative and shown as totals. A
+	// rising cumulative line is a poor chart in any case -- the useful form is
+	// a rate, and that is not what is stored here.
+	if strings.HasPrefix(name, "container.instance.network.") {
+		return chartNone
+	}
+	return chartExtra
 }
 
 // evictLocked drops the least recently seen host once the cap is reached.
@@ -435,14 +515,20 @@ func (s *Store) pruneSeriesLocked(h *host, now time.Time) {
 		}
 		// A charted host.* series is never reclaimed: those are the charts the
 		// overview draws, they are few, and a gap in them reads as an outage.
-		// A container's series is different -- the container it describes can
-		// stop for good, and without this its history would hold a slot in the
-		// cap forever, eventually crowding out the containers still running.
+		// Everything else can genuinely stop for good -- a container is
+		// removed, a service is undeployed -- and without reclaiming, its ring
+		// would hold a slot forever and eventually crowd out what is still
+		// running. The slot goes back to the budget it came from, or the two
+		// counters drift apart and the caps stop meaning anything.
 		if len(ser.history) > 0 {
 			if strings.HasPrefix(ser.name, "host.") {
 				continue
 			}
-			h.historySeries--
+			if chartClassOf(ser.name) == chartExtra {
+				h.historyExtra--
+			} else {
+				h.historySeries--
+			}
 		}
 		delete(h.series, key)
 	}

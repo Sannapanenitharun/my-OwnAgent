@@ -61,6 +61,32 @@ methods, in severity order.
 
 ### Changed
 
+- **Application metrics can be charted.** The fleet store granted a sample ring
+  only to `host.*` and two container gauges, so a metric received over OTLP
+  arrived, was stored, showed a current value, and could never be drawn --
+  "request latency is climbing" was a fact the store held and could not show.
+  `isChartable` becomes `chartClassOf`, splitting the answer three ways rather
+  than widening the yes:
+  - `chartCore` (`host.*`, the two container gauges) keeps its own reserved
+    budget and charts from first sight, so a chatty service can never blank the
+    overview. Two counters make that structural rather than a matter of tuning.
+  - `chartExtra` (application metrics, plus the agent's own `httpcheck.*` and
+    `agent.export.*`) draws on a separate `HistorySeriesExtra` budget, default
+    256, and must report **twice** before earning a ring. That second condition
+    is the cardinality guard: a label unique per request -- an order ID, a
+    request ID -- makes every series a one-off, and first-come budgeting would
+    let one burst take every slot until the staleness sweep.
+  - `chartNone` keeps the two exclusions that had real reasons: `process.*` is
+    keyed per executable, and the container network counters are cumulative
+    totals that make a poor chart in any case.
+
+  Retired series return their slot to the budget it came from. Worst case per
+  host roughly doubles, from about 1 MB of rings to 2 MB at the defaults.
+- **The metrics page draws application charts.** Fixing only the store would
+  have changed nothing visible: the chart grid was four hand-written specs
+  matching `host.*` by regex. Cards beyond those four are now built from
+  whatever arrived with history, one per metric name, with the legend keyed on
+  the label that actually distinguishes the lines.
 - **`packaging/observability-agent.service` is hardened.** The unit previously
   set `User=root` directly beneath a comment saying not to run as root. Root
   stays -- reading another user's `/proc/<pid>/{io,fd,ns}` requires it -- and
