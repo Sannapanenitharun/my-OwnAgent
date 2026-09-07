@@ -360,6 +360,11 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 		}
 		if id := dockerContainerID(rec.File); id != "" {
 			attrs = append(attrs, platform.A("container_id", id))
+		} else if rec.Container != "" {
+			attrs = append(attrs, platform.A("container_id", rec.Container))
+		}
+		if rec.Unit != "" {
+			attrs = append(attrs, platform.A("unit", rec.Unit))
 		}
 		// Attribution from discovery: this line came from a file the named
 		// process holds open for writing. It is established by HOW the file
@@ -383,7 +388,13 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 		// severity that depends on whether a credential happened to appear
 		// would be unreproducible.
 		severity := platform.SeverityInfo
-		if s.DetectSeverity {
+		if rec.HasPriority {
+			// The source stated a level. Reading one out of the message text
+			// is a heuristic over free-form output and cannot beat the
+			// sender's own declaration, so detection does not get a vote here.
+			severity = syslogSeverity(rec.Priority)
+			m.inst.leveled.Add(1, srcAttr, platform.A("severity", severity.String()))
+		} else if s.DetectSeverity {
 			if sev, found := detectSeverity(body); found {
 				severity = sev
 				m.inst.leveled.Add(1, srcAttr, platform.A("severity", sev.String()))

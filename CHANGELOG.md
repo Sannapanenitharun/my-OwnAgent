@@ -97,9 +97,28 @@ methods, in severity order.
   explaining that the usual hardening values for both would blind the
   collectors outright.
 
+- **journald collected 0.08% of what the host logged.** The reader scanned
+  newly appended bytes for the literal `MESSAGE=`. On teleport that took 30
+  lines out of 39,485 journal entries in the same window, while reporting
+  success on all 9,865 collection cycles -- the source looked healthy and was
+  effectively off. Replaced with a parser for the journal's object arena
+  (`internal/modules/logs/journalfile.go`): an ENTRY object holds offsets to
+  the DATA objects that make up that entry, so reading an entry means
+  following its items. Regular and compact layouts, tail-resumable, bounded
+  against corrupt input. Records now carry `_PID`, `_COMM`, `_SYSTEMD_UNIT`
+  and `CONTAINER_ID`, and journald's `PRIORITY` sets the level in place of
+  guessing it from the message text. Compressed payloads (XZ/LZ4/ZSTD) are
+  still skipped -- each would be a third-party dependency -- but they are
+  counted rather than shipped empty.
+
+  Validated against a real journal copied from the live host: `journalctl`
+  reported 54 entries, the parser returned 54, messages byte-identical, with
+  attribution the byte scan could never have produced.
+
 ### Known limitation
 
-- **Journald records still carry no process attribution.** The gap analysis
+- ~~**Journald records still carry no process attribution.**~~ *Fixed above.*
+  The original note read: The gap analysis
   estimated this at 1-2 days on the assumption that `_PID` and `_COMM` were
   already in the bytes being scanned. They are in the file, but journal DATA
   objects are deduplicated and shared across entries, so a byte scan cannot

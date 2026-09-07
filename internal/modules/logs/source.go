@@ -10,13 +10,24 @@ type Record struct {
 	File    string
 	Channel string
 
-	// PID and Process name the process that holds this file open for
-	// writing, when the file was found by discovery rather than by
-	// configuration. Set together or not at all: attribution that is only
-	// half known is worse than none, because a PID with no name reads as a
-	// number nobody can look up.
+	// PID and Process name the process this record came from: the one
+	// holding the file open for writing when it was found by discovery, or
+	// the sender journald recorded. Set together or not at all: attribution
+	// that is only half known is worse than none, because a PID with no name
+	// reads as a number nobody can look up.
 	PID     int
 	Process string
+
+	// Unit and Container are journald's own join keys, stamped by the daemon
+	// rather than read out of the message.
+	Unit      string
+	Container string
+
+	// Priority is the syslog level the SOURCE declared -- journald's PRIORITY
+	// field. HasPriority distinguishes "the sender said emerg" (0) from "the
+	// sender said nothing", which a bare int cannot: zero is a real level.
+	Priority    int
+	HasPriority bool
 }
 
 // Reader is one log source. A platform that cannot provide it is absent from

@@ -6,18 +6,31 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
-// journaldTailer follows systemd journal files from their current end and
-// extracts MESSAGE= payloads. It does not parse the journal index; it scans
-// newly appended bytes, which is enough to follow live logs without cgo.
+// journaldTailer follows systemd journal files by parsing their object arena.
+//
+// It used to scan appended bytes for the literal "MESSAGE=". On a host where
+// journald is the primary sink that collected 30 lines out of 39,485 while
+// reporting success every cycle. See journalfile.go for why the scan could not
+// be repaired.
 type journaldTailer struct {
-	state map[string]*fileState
+	state map[string]*journalFileState
+}
+
+type journalFileState struct {
+	// offset is the next object to examine. Objects are append-only, so this
+	// is all the position the walk needs.
+	offset int64
+	// size detects rotation the same way the file tailer does: a journal that
+	// shrank is a new file wearing an old name.
+	size int64
 }
 
 func newJournaldTailer() *journaldTailer {
-	return &journaldTailer{state: map[string]*fileState{}}
+	return &journaldTailer{state: map[string]*journalFileState{}}
 }
 
 func (t *journaldTailer) Read(_ context.Context, s Settings) ([]Record, error) {
@@ -27,7 +40,7 @@ func (t *journaldTailer) Read(_ context.Context, s Settings) ([]Record, error) {
 	}
 	var out []Record
 	for _, path := range files {
-		recs := t.readFile(path, s)
+		recs := t.readFile(path, s, s.MaxBatch-len(out))
 		out = append(out, recs...)
 		if len(out) >= s.MaxBatch {
 			return out[:s.MaxBatch], nil
@@ -36,7 +49,10 @@ func (t *journaldTailer) Read(_ context.Context, s Settings) ([]Record, error) {
 	return out, nil
 }
 
-func (t *journaldTailer) readFile(path string, s Settings) []Record {
+func (t *journaldTailer) readFile(path string, s Settings, budget int) []Record {
+	if budget <= 0 {
+		return nil
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -46,31 +62,69 @@ func (t *journaldTailer) readFile(path string, s Settings) []Record {
 	if err != nil {
 		return nil
 	}
+
+	h, err := readJournalHeader(f)
+	if err != nil {
+		// Not a journal, or one written by a version whose header this does
+		// not recognise. Silence is correct: journalFiles globs a directory,
+		// so a stray file there is not a fault.
+		return nil
+	}
+
 	cur := t.state[path]
 	if cur == nil {
-		t.state[path] = &fileState{offset: st.Size(), size: st.Size()}
+		// First sight starts at the tail, exactly as the file tailer starts at
+		// end-of-file: a 2.5 GB journal replayed on every agent restart would
+		// bury the live view in history nobody asked for.
+		t.state[path] = &journalFileState{offset: h.tailObjectOffset, size: st.Size()}
 		return nil
 	}
 	if st.Size() < cur.size {
-		cur.offset = 0
+		cur.offset = h.headerSize
 	}
-	if st.Size() == cur.offset {
-		return nil
-	}
-	limit := st.Size() - cur.offset
-	max := int64(s.MaxBytesPerS)
-	if max > 0 && limit > max {
-		limit = max
-	}
-	buf := make([]byte, limit)
-	n, err := f.ReadAt(buf, cur.offset)
-	if n == 0 && err != nil {
-		return nil
-	}
-	buf = buf[:n]
-	cur.offset += int64(n)
 	cur.size = st.Size()
-	return extractJournalMessages(buf, s.MaxBatch)
+
+	entries, next, _ := readJournalEntries(f, h, cur.offset, journalWanted, budget)
+	cur.offset = next
+
+	out := make([]Record, 0, len(entries))
+	for _, e := range entries {
+		rec := Record{
+			Body:   e.Fields["MESSAGE"],
+			Source: SourceJournald,
+		}
+		// Attribution the KERNEL set, not something parsed out of the text.
+		// _PID and _COMM are stamped by journald from the sending process's
+		// credentials, so unlike anything recovered from a line's contents
+		// they cannot be spoofed by what the process chose to write.
+		if pid, err := strconv.Atoi(e.Fields["_PID"]); err == nil && pid > 0 {
+			rec.PID = pid
+		}
+		if comm := e.Fields["_COMM"]; comm != "" {
+			rec.Process = comm
+		} else if id := e.Fields["SYSLOG_IDENTIFIER"]; id != "" {
+			rec.Process = id
+		}
+		if unit := e.Fields["_SYSTEMD_UNIT"]; unit != "" {
+			rec.Unit = unit
+		}
+		// Docker's journald driver stamps the container, which is the same
+		// join key the json-file path recovers from the file name.
+		if cid := e.Fields["CONTAINER_ID"]; cid != "" {
+			rec.Container = cid
+		}
+		// PRIORITY is the level the sender declared. It outranks reading a
+		// level out of the message text, which is a heuristic over free-form
+		// output and cannot be better than the source's own statement.
+		if p, err := strconv.Atoi(e.Fields["PRIORITY"]); err == nil && p >= 0 && p <= 7 {
+			rec.Priority, rec.HasPriority = p, true
+		}
+		if rec.Body == "" {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out
 }
 
 func journalFiles() []string {
@@ -81,7 +135,10 @@ func journalFiles() []string {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			if strings.HasSuffix(path, ".journal") {
+			// Rotated journals end in "@<seqnum>.journal" and hold only
+			// history; the live file is the plain one. Reading the archives
+			// would replay the past on every restart.
+			if strings.HasSuffix(path, ".journal") && !strings.Contains(filepath.Base(path), "@") {
 				out = append(out, path)
 			}
 			return nil

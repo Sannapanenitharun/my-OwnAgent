@@ -44,14 +44,6 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestExtractJournalMessages(t *testing.T) {
-	buf := []byte("PRIORITY=6\x00MESSAGE=hello from systemd\x00SYSLOG_IDENTIFIER=sshd\x00")
-	got := extractJournalMessages(buf, 10)
-	if len(got) != 1 || got[0].Body != "hello from systemd" {
-		t.Fatalf("got %#v", got)
-	}
-}
-
 func TestParseSettingsRejectsUnknown(t *testing.T) {
 	_, err := ParseSettings(mustMC(t, map[string]string{"pahts": "/var/log/syslog"}))
 	if err == nil {
