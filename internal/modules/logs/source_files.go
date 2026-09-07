@@ -145,8 +145,15 @@ func (t *fileTailer) Read(_ context.Context, s Settings) ([]Record, error) {
 		if len(matches) == 0 {
 			matches = []string{pattern}
 		}
+		// A pattern the operator wrote out in full is their decision, even if
+		// it names an archive. A pattern the AGENT expanded is not, so
+		// rotations are dropped only from wildcard matches.
+		globbed := strings.ContainsAny(pattern, "*?[")
 		for _, path := range matches {
 			if excluded(path, s.Exclude) {
+				continue
+			}
+			if globbed && looksRotated(filepath.Base(path)) {
 				continue
 			}
 			if opened >= s.MaxFiles {
@@ -282,4 +289,40 @@ func sniffBinary(f *os.File) bool {
 		return false
 	}
 	return looksBinary(head[:n])
+}
+
+// looksRotated reports whether a filename is a logrotate archive rather than
+// a live log.
+//
+// This is a budget guard, not a correctness one. Rotated files are not
+// re-shipped anyway -- the tailer starts every new file at its end -- but each
+// one still gets opened, stat-ed, sniffed and counted against max.files, which
+// defaults to 32. One nginx directory with a fortnight of retention can spend
+// that entire budget on files whose contents already shipped when they were
+// live, and starve /var/log/syslog of a slot.
+//
+// DATE STAMPS ARE NOT ROTATION. logrotate's dateext writes access.log.20260907
+// -- a numeric suffix, caught below -- but plenty of daemons name their CURRENT
+// file by date with no separator, and the SSM audit trail
+// (amazon-ssm-agent-audit-2026-08-26) is exactly that. Treating a date in a
+// name as evidence of rotation would drop the live file along with the archive.
+func looksRotated(base string) bool {
+	for _, ext := range []string{".gz", ".xz", ".bz2", ".zst", ".zip", ".Z", ".old", ".bak"} {
+		if strings.HasSuffix(base, ext) {
+			return true
+		}
+	}
+	// logrotate's generations: syslog.1, access.log.2, and with dateext
+	// access.log.20260907. A purely numeric final segment is never a format
+	// suffix, so this cannot swallow a live file called anything.log.
+	i := strings.LastIndexByte(base, '.')
+	if i <= 0 || i == len(base)-1 {
+		return false
+	}
+	for _, c := range base[i+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

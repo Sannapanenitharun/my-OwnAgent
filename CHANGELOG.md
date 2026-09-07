@@ -4,7 +4,7 @@ All notable changes to the observability agent. Each stage is a phase gate: the
 stage is not complete until the code is production quality, measured, and its
 limitations are recorded.
 
-## Unreleased - Ubuntu log coverage: depth, suffixes, and login accounting
+## Unreleased - Ubuntu log coverage: depth, suffixes, and the binary surfaces
 
 Closing the gaps found by enumerating a live Ubuntu host rather than working
 from a list of well-known log locations.
@@ -26,6 +26,22 @@ from a list of well-known log locations.
   below -- `wtmp`, `btmp`, `lastlog` and atop's archives sit in the same
   directories as the suffix-less text logs now being matched, and tailing one
   line-by-line would ship struct padding into the pipeline.
+- **Last-login table (`lastlog` source).** `/var/log/lastlog` is a table indexed
+  by user ID, not a stream: 292-byte records, one per account, overwritten in
+  place. It answers the question `wtmp` cannot after a rotation -- which
+  accounts have *never* been used, and which were used once, long ago. It is the
+  one reader here that reports its contents on first sight, because a table has
+  no end to start at. Bounded twice: 4 MiB of reads, because the file is sparse
+  and addressed by UID (one login by a directory-service UID in the billions
+  makes it nominally 584 GB of holes), and 256 accounts per cycle. Validated
+  against the host's own `lastlog` output, field for field.
+- **Archive coverage (`archives` source).** Reports which binary history
+  archives exist and what window each covers. atop's sample chain is walked
+  properly; sysstat's `sa*` files are reported as present with size and age.
+  This answers the question an operator asks when an incident predates the
+  agent: did anything on this box record that window? Validated by walking 23
+  real archives -- every chain landed exactly on EOF, zero out-of-order
+  timestamps, median interval 600s.
 
 ### Changed
 
@@ -40,14 +56,42 @@ from a list of well-known log locations.
     (`/var/log/cups/access_log`) and files with no suffix at all
     (`/var/log/dmesg`). Added those by name rather than by a bare `/var/log/*`
     wildcard, which would sweep in every rotated archive.
+  - *sysstat and SSM.* Added `/var/log/sysstat/sar*`, the text reports sysstat
+    writes alongside its binary archives, and `/var/log/amazon/ssm/audits/*`,
+    which is three directories deep, has no suffix, and is 0600 root.
+- **`max.files` default raised from 32 to 128.** The cap applies to the whole
+  cycle, not to each pattern, and patterns are read in order -- so exceeding it
+  does not thin the set, it truncates it. A real Ubuntu host with Docker matched
+  62 candidate files against a budget of 32, which meant the last nine patterns
+  were never opened at all. Because the important files are listed first, the
+  truncation was invisible: syslog and auth.log kept flowing while the tail of
+  the list was dead. Pinned by a test.
+- **Rotated archives are skipped in wildcard matches.** `logrotate` generations
+  (`.1`, `.20260907`) and compressed archives no longer consume a file slot when
+  the agent expanded the pattern itself. A path the operator wrote out in full
+  is still honoured, and a date in a *live* file's name is not treated as
+  rotation -- the SSM audit trail is named exactly that way.
+- **`Settings.Clone` now copies `DiscoverRoots` and `LoginFiles`.** Both aliased
+  the original. Neither is mutated today, so nothing was broken by it, but a
+  Clone that copied four of six slices was a trap set for whoever added the
+  mutation.
 
 ### Not done, deliberately
 
-- **atop, sysstat `sa*`, and `lastlog` stay unread.** They are binary
-  re-encodings of process and host metrics the agent already collects directly,
-  in a format that would cost a parser each. `lastlog` is a sparse table
-  indexed by UID rather than a log, and `wtmp` carries the same information as
-  events.
+- **atop and sysstat payloads stay undecoded.** Their *coverage* is now
+  reported, but the sample contents are not read. This is the format's own
+  boundary rather than a shortcut: an atop archive's header states
+  `sstatlen=1030216` and `tstatlen=992`, which are `sizeof()` of two C structs
+  as compiled into the binary that wrote the file. The payload is a raw struct
+  dump with no field tags, so interpreting it requires that exact build's
+  layout, and a mismatch does not fail -- it yields plausible wrong numbers.
+  atop itself refuses archives whose lengths do not match its own build. The
+  payloads are also the part we least need: per-process CPU, memory and I/O are
+  what the process module measures directly, live, at a resolution 10-minute
+  samples cannot match. sysstat's data is collected in full via its `sar*` text
+  reports instead.
+- **`lastlog` timestamps are 32-bit too.** `ll_time` is a signed 32-bit integer,
+  not `time_t`, so it overflows in January 2038 for the same reason `utmp` does.
 - **`utmp` timestamps are 32-bit.** `ut_tv.tv_sec` is a signed 32-bit integer
   even on 64-bit systems, so these records overflow in January 2038. The file
   says what it says; the decoder does not pretend otherwise.

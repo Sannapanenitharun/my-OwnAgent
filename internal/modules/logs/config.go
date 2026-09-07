@@ -23,11 +23,21 @@ const (
 	// fixed-size C structs: the file tailer would ship 384 bytes of NULs and
 	// padding per login.
 	SourceLogins Source = "logins"
+	// SourceLastlog is /var/log/lastlog, which is a TABLE indexed by user ID
+	// rather than a stream of events. It is separate from SourceLogins
+	// because it answers a different question -- "which accounts have ever
+	// been used" -- and because it is the one reader here that reports its
+	// contents on first sight instead of starting at the end.
+	SourceLastlog Source = "lastlog"
+	// SourceArchives reports which binary history archives exist on the host
+	// and what window each covers -- atop and sysstat. It reports COVERAGE,
+	// not contents: see atop.go for why the payloads are left undecoded.
+	SourceArchives Source = "archives"
 )
 
 func (s Source) String() string { return string(s) }
 
-var AllSources = []Source{SourceFiles, SourceJournald, SourceEventLog, SourceLogins}
+var AllSources = []Source{SourceFiles, SourceJournald, SourceEventLog, SourceLogins, SourceLastlog, SourceArchives}
 
 const AttrSource = "source"
 
@@ -65,8 +75,21 @@ type Settings struct {
 
 	MaxLineBytes int
 	MaxBytesPerS int
-	MaxFiles     int
-	MaxBatch     int
+
+	// MaxFiles caps how many files one collection cycle will open.
+	//
+	// IT IS A CAP ON THE WHOLE CYCLE, NOT PER PATTERN, and the patterns are
+	// walked in order, so a low value does not thin the set evenly -- it
+	// truncates it. Everything after the cut is never read at all.
+	//
+	// The default was 32 when the default path list had four entries. It now
+	// has fifteen, and on a container host the docker glob alone can match
+	// twenty: a real host measured 62 candidate files, which meant the last
+	// nine patterns -- dmesg, the Apache-convention logs, sar reports and the
+	// SSM audit trail -- were silently never opened. The files that matter
+	// most are still listed first, so the truncation was invisible.
+	MaxFiles int
+	MaxBatch int
 
 	// DiscoverLogs finds log files by asking which ones processes hold open
 	// for writing, instead of tailing only what an operator listed. Off by
@@ -93,6 +116,14 @@ type Settings struct {
 	// /var/log/btmp and /var/log/wtmp.
 	LoginFiles []string
 
+	// LastlogFile overrides the last-login table. Empty selects
+	// /var/log/lastlog.
+	LastlogFile string
+
+	// ArchivePaths overrides which binary history archives are surveyed.
+	// Empty selects atop's and sysstat's directories.
+	ArchivePaths []string
+
 	EventLogs []string
 
 	DisabledSources map[Source]bool
@@ -106,7 +137,7 @@ func DefaultSettings() Settings {
 		CollectionTimeout: 2 * time.Second,
 		MaxLineBytes:      16 * 1024,
 		MaxBytesPerS:      256 * 1024,
-		MaxFiles:          32,
+		MaxFiles:          128,
 		MaxBatch:          256,
 		EventLogs:         []string{"Application", "System"},
 		DisabledSources:   map[Source]bool{},
@@ -119,6 +150,13 @@ func (s Settings) Clone() Settings {
 	out.Exclude = append([]string(nil), s.Exclude...)
 	out.ExcludeContains = append([]string(nil), s.ExcludeContains...)
 	out.EventLogs = append([]string(nil), s.EventLogs...)
+	// DiscoverRoots and LoginFiles were absent here and aliased the original.
+	// Neither is mutated today, so nothing was broken by it -- but a Clone
+	// that copies four of six slices is a trap set for whoever adds the
+	// mutation.
+	out.DiscoverRoots = append([]string(nil), s.DiscoverRoots...)
+	out.LoginFiles = append([]string(nil), s.LoginFiles...)
+	out.ArchivePaths = append([]string(nil), s.ArchivePaths...)
 	out.DisabledSources = make(map[Source]bool, len(s.DisabledSources))
 	for k, v := range s.DisabledSources {
 		out.DisabledSources[k] = v
@@ -147,6 +185,8 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 		"event_logs":    true,
 		"disable.files": true, "disable.journald": true, "disable.eventlog": true,
 		"disable.logins": true, "login_files": true,
+		"disable.lastlog": true, "lastlog_file": true,
+		"disable.archives": true, "archive_paths": true,
 		"discover":          true,
 		"discover.roots":    true,
 		"discover.interval": true,
@@ -245,6 +285,18 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 	}
 	if v, ok := mc.Settings["login_files"]; ok {
 		s.LoginFiles = splitList(v)
+	}
+	if v, ok := mc.Settings["disable.lastlog"]; ok {
+		s.DisabledSources[SourceLastlog] = parseBool(v)
+	}
+	if v, ok := mc.Settings["lastlog_file"]; ok {
+		s.LastlogFile = strings.TrimSpace(v)
+	}
+	if v, ok := mc.Settings["disable.archives"]; ok {
+		s.DisabledSources[SourceArchives] = parseBool(v)
+	}
+	if v, ok := mc.Settings["archive_paths"]; ok {
+		s.ArchivePaths = splitList(v)
 	}
 	return s, nil
 }
