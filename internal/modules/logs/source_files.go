@@ -74,6 +74,10 @@ type fileTailer struct {
 type fileState struct {
 	offset int64
 	size   int64
+	// binary is decided once, on first sight. Re-sniffing every cycle would
+	// pay for a decision that cannot change without the file being replaced,
+	// and a replaced file resets this state anyway.
+	binary bool
 }
 
 func newFileTailer() *fileTailer {
@@ -173,9 +177,13 @@ func (t *fileTailer) readPath(path string, s Settings) ([]Record, bool) {
 	}
 	cur := t.state[path]
 	if cur == nil {
-		// First sight: start at end so existing content is not re-shipped.
-		t.state[path] = &fileState{offset: st.Size(), size: st.Size()}
+		// First sight: start at end so existing content is not re-shipped,
+		// and decide once whether this is text at all.
+		t.state[path] = &fileState{offset: st.Size(), size: st.Size(), binary: sniffBinary(f)}
 		return nil, true
+	}
+	if cur.binary {
+		return nil, false
 	}
 	if st.Size() < cur.size {
 		cur.offset = 0
@@ -227,4 +235,51 @@ func excluded(path string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// Binary files must never be tailed as text.
+//
+// This became load-bearing the moment the default paths widened to catch logs
+// with no .log suffix. /var/log holds several files that are not text at all
+// and sit right next to ones that are: wtmp, btmp and lastlog are arrays of C
+// structs, and atop and sysstat write their own binary formats. Tailing any of
+// them line-by-line ships NUL bytes and struct padding into the log pipeline,
+// where it is unreadable, unsearchable, and impossible to explain.
+//
+// Extension is not the test. /var/log/dmesg has no suffix and is text;
+// /var/log/wtmp has no suffix and is not. So the file itself is asked.
+const binarySniffLen = 512
+
+// looksBinary reports whether the head of a file is not text.
+//
+// A NUL byte is the decisive signal -- no text log contains one, and every
+// fixed-width C struct does. The control-character ratio catches the rest
+// without rejecting UTF-8, whose continuation bytes are all >= 0x80 and are
+// counted as text here.
+func looksBinary(head []byte) bool {
+	if len(head) == 0 {
+		return false
+	}
+	ctrl := 0
+	for _, c := range head {
+		if c == 0 {
+			return true
+		}
+		// Tab, newline and carriage return are text; the rest of C0 is not.
+		if c < 0x20 && c != '\t' && c != '\n' && c != '\r' {
+			ctrl++
+		}
+	}
+	return ctrl*100/len(head) > 10
+}
+
+// sniffBinary reads the head of an open file without disturbing a caller that
+// has not seeded its offset yet.
+func sniffBinary(f *os.File) bool {
+	head := make([]byte, binarySniffLen)
+	n, err := f.ReadAt(head, 0)
+	if n == 0 && err != nil {
+		return false
+	}
+	return looksBinary(head[:n])
 }

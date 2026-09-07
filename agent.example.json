@@ -85,7 +85,9 @@
       "required": false,
       "settings": {
         "interval": "2s",
-        "paths": "/var/log/syslog,/var/log/auth.log,/var/log/cloud-init.log,/var/log/kern.log,/var/log/ubuntu-advantage.log",
+        "paths": "/var/log/syslog,/var/log/messages,/var/log/auth.log,/var/log/*.log,/var/log/*/*.log,/var/log/*/*/*.log,/var/log/dmesg,/var/log/*/access_log,/var/log/*/error_log,/var/lib/docker/containers/*/*-json.log,/var/log/containers/*.log,/var/log/pods/*/*/*.log",
+        "exclude": "*.gz,*.1,*.2,*.3,*.4,*.5,*.old,*.bak",
+        "login_files": "/var/log/btmp,/var/log/wtmp",
         "discover": "false",
         "discover.roots": "/var/log",
         "discover.interval": "60s",

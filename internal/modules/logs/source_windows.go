@@ -15,6 +15,7 @@ func platformSet() Set {
 	}
 	s.Unsupported = []Unsupported{
 		{Source: SourceJournald, Reason: "journald is not available on Windows"},
+		{Source: SourceLogins, Reason: "utmp login accounting is a Unix file format"},
 	}
 	return s
 }

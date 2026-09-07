@@ -47,6 +47,7 @@ type Set struct {
 	Files       Reader
 	Journald    Reader
 	EventLog    Reader
+	Logins      Reader
 	Unsupported []Unsupported
 }
 
@@ -58,6 +59,8 @@ func (s Set) Has(src Source) bool {
 		return s.Journald != nil
 	case SourceEventLog:
 		return s.EventLog != nil
+	case SourceLogins:
+		return s.Logins != nil
 	}
 	return false
 }
@@ -70,6 +73,8 @@ func (s Set) Reader(src Source) Reader {
 		return s.Journald
 	case SourceEventLog:
 		return s.EventLog
+	case SourceLogins:
+		return s.Logins
 	}
 	return nil
 }

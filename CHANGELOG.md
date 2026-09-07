@@ -4,6 +4,54 @@ All notable changes to the observability agent. Each stage is a phase gate: the
 stage is not complete until the code is production quality, measured, and its
 limitations are recorded.
 
+## Unreleased - Ubuntu log coverage: depth, suffixes, and login accounting
+
+Closing the gaps found by enumerating a live Ubuntu host rather than working
+from a list of well-known log locations.
+
+### Added
+
+- **Login accounting (`logins` source).** `/var/log/btmp` records failed login
+  attempts and nothing else on the system records them in a form meant to be
+  counted -- 289 of them on a host whose SSH port answers the public internet.
+  `/var/log/wtmp` carries the successful side. Both are flat arrays of 384-byte
+  glibc `utmp` structs, decoded in `internal/modules/logs/utmp.go`. Failed
+  logins are emitted at warning level, successes at info. Validated against
+  `lastb` on real data: usernames, source hosts, terminals and timestamps match
+  record for record.
+- **Binary detection in the file tailer.** Every newly seen file is sniffed
+  once; one NUL byte or more than 10% C0 control characters means it is not
+  text and is never tailed. UTF-8 continuation bytes count as text, so accented
+  and CJK logs are unaffected. This is the prerequisite for the widened paths
+  below -- `wtmp`, `btmp`, `lastlog` and atop's archives sit in the same
+  directories as the suffix-less text logs now being matched, and tailing one
+  line-by-line would ship struct padding into the pipeline.
+
+### Changed
+
+- **Default log paths rebuilt for Ubuntu.** Two patterns were missing whole
+  categories:
+  - *Depth.* `/var/log/*/*.log` is exactly one directory deep, so
+    `/var/log/amazon/ssm/amazon-ssm-agent.log` was invisible, as would be a
+    Kubernetes node's `/var/log/pods/<pod>/<container>/0.log`. Added
+    `/var/log/*/*/*.log`, `/var/log/containers/*.log` and
+    `/var/log/pods/*/*/*.log`.
+  - *Suffix.* Requiring `.log` hid the Apache naming convention
+    (`/var/log/cups/access_log`) and files with no suffix at all
+    (`/var/log/dmesg`). Added those by name rather than by a bare `/var/log/*`
+    wildcard, which would sweep in every rotated archive.
+
+### Not done, deliberately
+
+- **atop, sysstat `sa*`, and `lastlog` stay unread.** They are binary
+  re-encodings of process and host metrics the agent already collects directly,
+  in a format that would cost a parser each. `lastlog` is a sparse table
+  indexed by UID rather than a log, and `wtmp` carries the same information as
+  events.
+- **`utmp` timestamps are 32-bit.** `ut_tv.tv_sec` is a signed 32-bit integer
+  even on 64-bit systems, so these records overflow in January 2038. The file
+  says what it says; the decoder does not pretend otherwise.
+
 ## Unreleased - OTLP signal routing, log discovery, service hardening
 
 Three items from the gap analysis against Datadog and Dynatrace collection

@@ -15,6 +15,7 @@ func platformSet() Set {
 		Unsupported: []Unsupported{
 			{Source: SourceJournald, Reason: "journald is not available on macOS"},
 			{Source: SourceEventLog, Reason: "Windows Event Log is not available on macOS"},
+			{Source: SourceLogins, Reason: "utmp login accounting is not written on macOS"},
 		},
 	}
 }

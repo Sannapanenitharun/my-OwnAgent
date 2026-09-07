@@ -10,6 +10,7 @@ func platformSet() Set {
 			{Source: SourceFiles, Reason: "no log file defaults on this OS"},
 			{Source: SourceJournald, Reason: "journald is not available on this OS"},
 			{Source: SourceEventLog, Reason: "Windows Event Log is not available on this OS"},
+			{Source: SourceLogins, Reason: "utmp login accounting is not read on this OS"},
 		},
 	}
 }

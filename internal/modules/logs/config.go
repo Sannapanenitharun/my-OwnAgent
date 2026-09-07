@@ -18,11 +18,16 @@ const (
 	SourceFiles    Source = "files"
 	SourceJournald Source = "journald"
 	SourceEventLog Source = "eventlog"
+	// SourceLogins is the login accounting files, btmp and wtmp. It is its
+	// own source rather than a path in the files list because the records are
+	// fixed-size C structs: the file tailer would ship 384 bytes of NULs and
+	// padding per login.
+	SourceLogins Source = "logins"
 )
 
 func (s Source) String() string { return string(s) }
 
-var AllSources = []Source{SourceFiles, SourceJournald, SourceEventLog}
+var AllSources = []Source{SourceFiles, SourceJournald, SourceEventLog, SourceLogins}
 
 const AttrSource = "source"
 
@@ -84,6 +89,10 @@ type Settings struct {
 	// MaxDiscovered caps how many files discovery will add. Zero selects 128.
 	MaxDiscovered int
 
+	// LoginFiles overrides which accounting files are read. Empty selects
+	// /var/log/btmp and /var/log/wtmp.
+	LoginFiles []string
+
 	EventLogs []string
 
 	DisabledSources map[Source]bool
@@ -137,6 +146,7 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 		"max.files": true, "max.batch": true,
 		"event_logs":    true,
 		"disable.files": true, "disable.journald": true, "disable.eventlog": true,
+		"disable.logins": true, "login_files": true,
 		"discover":          true,
 		"discover.roots":    true,
 		"discover.interval": true,
@@ -229,6 +239,12 @@ func ParseSettings(mc config.ModuleConfig) (Settings, error) {
 	}
 	if v, ok := mc.Settings["disable.eventlog"]; ok {
 		s.DisabledSources[SourceEventLog] = parseBool(v)
+	}
+	if v, ok := mc.Settings["disable.logins"]; ok {
+		s.DisabledSources[SourceLogins] = parseBool(v)
+	}
+	if v, ok := mc.Settings["login_files"]; ok {
+		s.LoginFiles = splitList(v)
 	}
 	return s, nil
 }
