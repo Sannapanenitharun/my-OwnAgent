@@ -80,6 +80,7 @@ func platformSet() Set {
 		Logins:   newLoginTailer(),
 		Lastlog:  newLastlogTailer(),
 		Archives: newArchiveTailer(),
+		Syslog:   newSyslogListener(),
 	}
 	s.Unsupported = []Unsupported{
 		{Source: SourceEventLog, Reason: "Windows Event Log is not available on Linux"},

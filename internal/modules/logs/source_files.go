@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // discoverHook is set by discover_linux.go on the one platform that has
@@ -74,6 +75,12 @@ type fileTailer struct {
 type fileState struct {
 	offset int64
 	size   int64
+
+	// encoding and bom are decided once, on first sight, from the byte-order
+	// mark or from configuration. bom is the number of bytes to skip when
+	// reading from the beginning of the file.
+	encoding Encoding
+	bom      int64
 	// binary is decided once, on first sight. Re-sniffing every cycle would
 	// pay for a decision that cannot change without the file being replaced,
 	// and a replaced file resets this state anyway.
@@ -184,16 +191,38 @@ func (t *fileTailer) readPath(path string, s Settings) ([]Record, bool) {
 	}
 	cur := t.state[path]
 	if cur == nil {
-		// First sight: start at end so existing content is not re-shipped,
-		// and decide once whether this is text at all.
-		t.state[path] = &fileState{offset: st.Size(), size: st.Size(), binary: sniffBinary(f)}
-		return nil, true
+		// First sight. Three things are decided once, here: the encoding,
+		// whether this is text at all, and where reading starts.
+		enc, bom := sniffEncoding(f, s.Encoding)
+		fs := &fileState{encoding: enc, bom: bom, offset: st.Size(), size: st.Size()}
+		// A byte-order mark is proof of text, so the NUL test is skipped for
+		// it -- that test is exactly what used to reject UTF-16 files, whose
+		// ASCII content is half NUL bytes. A UTF-16 file with no BOM still
+		// has to be declared with `encoding`, which is what Datadog requires
+		// too.
+		if enc == EncodingUTF8 {
+			fs.binary = sniffBinary(f)
+		}
+		if s.StartPosition == StartBeginning {
+			fs.offset = bom
+		}
+		t.state[path] = fs
+		if fs.binary || s.StartPosition != StartBeginning {
+			return nil, true
+		}
+		// Reading from the beginning starts on this cycle rather than the
+		// next one: the operator asked for the file's history, and making
+		// them wait an interval for it serves nobody.
+		cur = fs
 	}
 	if cur.binary {
 		return nil, false
 	}
+	if cur.encoding == EncodingUTF16LE || cur.encoding == EncodingUTF16BE {
+		return t.readUTF16(f, path, cur, st.Size(), s), true
+	}
 	if st.Size() < cur.size {
-		cur.offset = 0
+		cur.offset = cur.bom
 	}
 	if _, err := f.Seek(cur.offset, io.SeekStart); err != nil {
 		return nil, true
@@ -255,6 +284,12 @@ func excluded(path string, patterns []string) bool {
 //
 // Extension is not the test. /var/log/dmesg has no suffix and is text;
 // /var/log/wtmp has no suffix and is not. So the file itself is asked.
+//
+// THE NUL TEST IS NOT APPLIED TO EVERYTHING. ASCII text encoded as UTF-16 is
+// half NUL bytes, so this would reject a perfectly good log file -- silently,
+// and completely. sniffEncoding runs first, and a file with a UTF-16
+// byte-order mark never reaches here. One without a mark still does, which is
+// why such a file has to be declared with the `encoding` setting.
 const binarySniffLen = 512
 
 // looksBinary reports whether the head of a file is not text.
@@ -325,4 +360,150 @@ func looksRotated(base string) bool {
 		}
 	}
 	return true
+}
+
+// sniffEncoding decides how to decode a file, once, on first sight.
+//
+// A byte-order mark is authoritative when present. An explicit `encoding`
+// setting wins over the absence of one, which is the only way to read a
+// UTF-16 file that has no BOM -- and Datadog has the same requirement for the
+// same reason.
+//
+// The returned offset is the width of the mark, so a reader starting at the
+// beginning of the file does not deliver it as content. A BOM at the head of
+// the first line renders as a zero-width space in most viewers and as U+FEFF
+// in the ones that matter.
+func sniffEncoding(f *os.File, want Encoding) (Encoding, int64) {
+	var head [3]byte
+	n, err := f.ReadAt(head[:], 0)
+	if n <= 0 && err != nil {
+		if want == "" || want == EncodingAuto {
+			return EncodingUTF8, 0
+		}
+		return want, 0
+	}
+	b := head[:n]
+
+	var bomEnc Encoding
+	var bomLen int64
+	switch {
+	case len(b) >= 2 && b[0] == 0xFF && b[1] == 0xFE:
+		bomEnc, bomLen = EncodingUTF16LE, 2
+	case len(b) >= 2 && b[0] == 0xFE && b[1] == 0xFF:
+		bomEnc, bomLen = EncodingUTF16BE, 2
+	case len(b) >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF:
+		bomEnc, bomLen = EncodingUTF8, 3
+	}
+
+	if want != "" && want != EncodingAuto {
+		// An explicit setting is honoured, but a mark that agrees with it is
+		// still skipped rather than shipped.
+		if bomEnc == want {
+			return want, bomLen
+		}
+		return want, 0
+	}
+	if bomEnc != "" {
+		return bomEnc, bomLen
+	}
+	return EncodingUTF8, 0
+}
+
+// readUTF16 tails a UTF-16 file.
+//
+// It is a separate path from the UTF-8 one rather than a decoding wrapper
+// around it, because the unit of progress is different: a UTF-16 file advances
+// two bytes at a time, and an offset that lands mid-unit desynchronises every
+// subsequent read into mojibake that still looks like text.
+func (t *fileTailer) readUTF16(f *os.File, path string, cur *fileState, size int64, s Settings) []Record {
+	if size < cur.size {
+		cur.offset = cur.bom
+	}
+	cur.size = size
+	if size <= cur.offset {
+		return nil
+	}
+
+	limit := int64(s.MaxBytesPerS)
+	if limit <= 0 {
+		limit = 256 * 1024
+	}
+	want := size - cur.offset
+	if want > limit {
+		want = limit
+	}
+	// An odd length would split a code unit; drop the stray byte and pick it
+	// up next cycle, when its partner has arrived.
+	want -= want % 2
+	if want <= 0 {
+		return nil
+	}
+
+	buf := make([]byte, want)
+	n, err := f.ReadAt(buf, cur.offset)
+	if n <= 0 {
+		_ = err
+		return nil
+	}
+	n -= n % 2
+
+	text, consumed := decodeUTF16Lines(buf[:n], cur.encoding == EncodingUTF16BE)
+	if consumed == 0 {
+		// No complete line yet. Waiting is correct: a partial line delivered
+		// now would be delivered again, in full, once its newline arrives.
+		return nil
+	}
+	cur.offset += int64(consumed)
+
+	var out []Record
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if line == "" {
+			continue
+		}
+		rec := Record{Body: line, Source: SourceFiles, File: path}
+		if owner, ok := t.owners[path]; ok {
+			rec.PID, rec.Process = owner.PID, owner.Process
+		}
+		out = append(out, rec)
+		if len(out) >= s.MaxBatch {
+			break
+		}
+	}
+	return out
+}
+
+// decodeUTF16Lines decodes complete lines from a UTF-16 buffer and reports how
+// many bytes were consumed.
+//
+// It stops at the last newline in the buffer so no partial line is ever
+// emitted, and returns 0 when the buffer holds no newline at all.
+func decodeUTF16Lines(b []byte, bigEndian bool) (string, int) {
+	end := -1
+	for i := 0; i+1 < len(b); i += 2 {
+		var u uint16
+		if bigEndian {
+			u = uint16(b[i])<<8 | uint16(b[i+1])
+		} else {
+			u = uint16(b[i+1])<<8 | uint16(b[i])
+		}
+		if u == '\n' {
+			end = i + 2
+		}
+	}
+	if end <= 0 {
+		return "", 0
+	}
+	units := make([]uint16, 0, end/2)
+	for i := 0; i+1 < end; i += 2 {
+		if bigEndian {
+			units = append(units, uint16(b[i])<<8|uint16(b[i+1]))
+		} else {
+			units = append(units, uint16(b[i+1])<<8|uint16(b[i]))
+		}
+	}
+	// utf16.Decode pairs surrogates and replaces unpaired ones with U+FFFD,
+	// which is the right answer for a log file: a lone surrogate is corrupt
+	// input, and refusing the whole line over it would lose the rest.
+	return string(utf16.Decode(units)), end
 }

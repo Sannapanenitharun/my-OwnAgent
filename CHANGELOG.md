@@ -4,6 +4,70 @@ All notable changes to the observability agent. Each stage is a phase gate: the
 stage is not complete until the code is production quality, measured, and its
 limitations are recorded.
 
+## Unreleased - Parity with commercial collectors: records, encodings, intake
+
+A survey of how Datadog and Dynatrace actually collect from Ubuntu turned up
+six differences. Five are closed here. The first two were not missing features
+but damage to logs already being collected.
+
+### Fixed
+
+- **Multi-line records.** A stack trace is one event written as forty lines,
+  and every one of them was shipped as a separate record. `multiline` now
+  defaults to `auto` and folds continuation lines into the record they belong
+  to.
+
+  The default is safe because aggregation is GATED. The naive rule -- a line
+  that does not start a record continues the previous one -- collapses a file
+  with no timestamps into one unbounded record, which destroys data rather than
+  fragmenting it. So detection runs first, per file, mirroring what Datadog
+  documents: sample the first 500 lines or 30 seconds, emitting them unchanged
+  meanwhile, and aggregate only if at least half of them begin with a
+  recognised record start. `dmesg`, access logs and single-line JSON all score
+  below the threshold and are read exactly as before. Records are bounded at
+  500 lines and 256 KiB, and are split rather than truncated at the limit.
+
+- **UTF-16 log files were silently discarded.** The binary guard added for
+  `wtmp` rejects any file containing a NUL byte -- and ASCII encoded as UTF-16
+  is half NUL bytes. Such a file was not mis-parsed, it was dropped whole, with
+  nothing said. Byte-order marks are now read before the NUL test, UTF-16LE and
+  UTF-16BE are decoded, and a UTF-8 BOM is skipped instead of being delivered
+  as the first character of the first line. A UTF-16 file with no mark must be
+  declared with `encoding`, which is what Datadog requires as well; undeclared
+  and unmarked, it is genuinely indistinguishable from a binary file.
+
+### Added
+
+- **Syslog receiver (`syslog` source).** RFC 3164 and RFC 5424 over TCP and
+  UDP, with both RFC 6587 TCP framings accepted on the same connection.
+  Anything that fails to parse is forwarded as an unstructured message rather
+  than dropped. OFF unless `syslog.listen` is set: the port accepts
+  unauthenticated writes into the log pipeline from anyone who can reach it, so
+  it must never come up merely because the logs module is enabled. The queue is
+  bounded at 8192 records and drops the OLDEST, because a relay backlog is
+  stale by definition; drops are counted.
+- **Regex line filters.** `include.match` keeps only matching lines and
+  `exclude.match` drops matching ones, both evaluated before anything
+  downstream pays for the line. Until now the only filter was a global
+  substring exclude, which cannot express "keep only what I care about".
+  Patterns are compiled at config load, so a broken one fails where somebody is
+  watching.
+- **`start_position`.** `beginning` reads a newly seen file from byte zero, for
+  onboarding a host whose logs predate the agent. The default stays `end`.
+
+### Not done, deliberately
+
+- **Shift-JIS.** Datadog supports it; decoding it needs a mapping table, and
+  UTF-16 was the encoding that was silently losing data.
+- **Per-source filter scoping.** Datadog attaches processing rules to each
+  configured source. Ours are module-wide, which is the honest limit of a flat
+  settings map, and scoping them is a config-model change rather than a filter
+  change.
+- **Container metadata from the runtime API.** We still recover the container
+  ID from the log's path rather than asking Docker for image and labels. The
+  socket integration exists and stays opt-in, because socket access is
+  root-equivalent.
+
 ## Unreleased - Ubuntu log coverage: depth, suffixes, and the binary surfaces
 
 Closing the gaps found by enumerating a live Ubuntu host rather than working

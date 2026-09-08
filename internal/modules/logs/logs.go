@@ -44,6 +44,10 @@ type Module struct {
 	host module.Host
 	inst *instruments
 
+	// ml folds continuation lines into records. It is touched only from the
+	// collection goroutine, which is why it sits outside the mutex.
+	ml *multiline
+
 	cancel      context.CancelFunc
 	done        chan struct{}
 	reconfigure chan struct{}
@@ -88,7 +92,7 @@ func newInstruments(t platform.Telemetry) *instruments {
 func New() *Module { return NewWithSet(platformSet()) }
 
 func NewWithSet(set Set) *Module {
-	m := &Module{set: set, settings: DefaultSettings(), status: map[Source]*sourceStatus{}}
+	m := &Module{set: set, settings: DefaultSettings(), status: map[Source]*sourceStatus{}, ml: newMultiline()}
 	for _, src := range AllSources {
 		st := &sourceStatus{available: set.Has(src)}
 		if !st.available {
@@ -182,14 +186,29 @@ func (m *Module) Stop(ctx context.Context) error {
 	m.cancel = nil
 	m.started = false
 	m.mu.Unlock()
+	// closeListeners releases sockets held by push-shaped sources. It runs
+	// AFTER the collection goroutine has stopped, never before: that goroutine
+	// starts the listener whenever the configured address differs from the
+	// bound one, so closing first leaves a window in which one more cycle
+	// binds the port straight back and Stop returns with it still open.
+	closeListeners := func() {
+		if c, ok := m.set.Syslog.(interface{ Close() }); ok {
+			c.Close()
+		}
+	}
 	if cancel == nil {
+		closeListeners()
 		return nil
 	}
 	cancel()
 	select {
 	case <-done:
+		closeListeners()
 		return nil
 	case <-ctx.Done():
+		// The collector is wedged. Release the sockets anyway -- a port held
+		// by a goroutine nobody can stop is worse than one released early.
+		closeListeners()
 		return fmt.Errorf("logs: collection goroutine did not exit: %w", ctx.Err())
 	}
 }
@@ -300,6 +319,16 @@ func (m *Module) collect(ctx context.Context, src Source) {
 		recs, e = rdr.Read(cctx, settings)
 		return e
 	})
+	// Fold continuation lines into the records they belong to, then release
+	// anything whose continuation never arrived. Process runs FIRST: a record
+	// still open on a file that just produced lines is continued by them, and
+	// only a file that produced nothing this cycle can be idle enough to
+	// flush. That ordering is also what keeps a single file's records in
+	// order, since the two calls can never both touch the same file.
+	if src == SourceFiles {
+		recs = append(m.ml.Process(recs, settings), m.ml.FlushIdle(settings)...)
+	}
+
 	srcAttr := platform.A(AttrSource, src.String())
 	m.inst.duration.Observe(m.host.Clock.Now().Sub(begin).Seconds(), srcAttr)
 
@@ -345,6 +374,19 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 			m.inst.dropped.Add(1, srcAttrOf(rec), platform.A("reason", "excluded"))
 			continue
 		}
+		// Include is evaluated before exclude, so a line must survive both. A
+		// line dropped here is counted under its own reason rather than the
+		// substring filter's: "my include pattern is wrong" and "my exclude
+		// list is too broad" are different problems and must be tellable
+		// apart from the metrics alone.
+		if !matchesInclude(line, s.IncludeMatch) {
+			m.inst.dropped.Add(1, srcAttrOf(rec), platform.A("reason", "not_included"))
+			continue
+		}
+		if matchesExclude(line, s.ExcludeMatch) {
+			m.inst.dropped.Add(1, srcAttrOf(rec), platform.A("reason", "exclude_match"))
+			continue
+		}
 		body, truncated := Truncate(line, s.MaxLineBytes)
 		redacted := Redact(body)
 		srcAttr := platform.A(AttrSource, rec.Source.String())
@@ -365,6 +407,12 @@ func (m *Module) emit(recs []Record, s Settings, entity string) int {
 		}
 		if rec.Unit != "" {
 			attrs = append(attrs, platform.A("unit", rec.Unit))
+		}
+		// A relayed record came from another machine. Without this the record
+		// reads as though this host produced it, which is the one thing a
+		// syslog receiver must never imply.
+		if rec.Hostname != "" {
+			attrs = append(attrs, platform.A("hostname", rec.Hostname))
 		}
 		// Attribution from discovery: this line came from a file the named
 		// process holds open for writing. It is established by HOW the file

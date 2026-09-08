@@ -23,6 +23,12 @@ type Record struct {
 	Unit      string
 	Container string
 
+	// Hostname is the machine a record came from when that is not this one:
+	// the sender's own hostname field, or the address the message arrived
+	// from. Only the syslog receiver sets it, and losing it would make a
+	// relayed record indistinguishable from a local one.
+	Hostname string
+
 	// Priority is the syslog level the SOURCE declared -- journald's PRIORITY
 	// field. HasPriority distinguishes "the sender said emerg" (0) from "the
 	// sender said nothing", which a bare int cannot: zero is a real level.
@@ -50,6 +56,7 @@ type Set struct {
 	Logins      Reader
 	Lastlog     Reader
 	Archives    Reader
+	Syslog      Reader
 	Unsupported []Unsupported
 }
 
@@ -67,6 +74,8 @@ func (s Set) Has(src Source) bool {
 		return s.Lastlog != nil
 	case SourceArchives:
 		return s.Archives != nil
+	case SourceSyslog:
+		return s.Syslog != nil
 	}
 	return false
 }
@@ -85,6 +94,8 @@ func (s Set) Reader(src Source) Reader {
 		return s.Lastlog
 	case SourceArchives:
 		return s.Archives
+	case SourceSyslog:
+		return s.Syslog
 	}
 	return nil
 }
