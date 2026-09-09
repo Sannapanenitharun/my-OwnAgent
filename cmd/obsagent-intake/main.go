@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 
 	"github.com/obsagent/observability-agent/internal/fleet"
+	"github.com/obsagent/observability-agent/internal/pricing"
 )
 
 const schema = "obsagent.v1"
@@ -45,6 +46,8 @@ func main() {
 	apiKey := flag.String("api-key", os.Getenv("INTAKE_API_KEY"), "optional X-API-Key value; empty disables auth")
 	dir := flag.String("store", "", "optional directory to append JSONL files (logs.jsonl, metrics.jsonl, traces.jsonl)")
 	uiListen := flag.String("ui-listen", envOr("INTAKE_UI_LISTEN", "127.0.0.1:8181"), "fleet UI address; 'off' disables")
+	pricingOn := flag.Bool("pricing", envOr("INTAKE_PRICING", "") != "", "estimate host cost from the AWS public price list (list prices; downloads ~300MB per region on first use)")
+	unitMetric := flag.String("unit-metric", os.Getenv("INTAKE_UNIT_METRIC"), "metric name to divide cost by, e.g. orders.processed; empty disables unit cost")
 	flag.Parse()
 
 	s := &server{
@@ -72,6 +75,18 @@ func main() {
 
 	// The fleet UI runs on its own listener so ingest can be exposed to a
 	// network while the UI stays on loopback, or the reverse.
+	// Cost estimation is opt-in. It is off by default for two reasons: the
+	// first lookup for a region downloads roughly 300 MB, and the numbers it
+	// produces are LIST prices that must never be mistaken for a bill.
+	if *pricingOn {
+		s.fleet.SetRates(pricing.NewResolver(*dir, nil))
+		log.Printf("pricing: enabled, caching under %q (list prices; estimates only)", *dir)
+	}
+	if strings.TrimSpace(*unitMetric) != "" {
+		s.fleet.SetUnitMetric(*unitMetric)
+		log.Printf("unit economics: dividing cost by %q", strings.TrimSpace(*unitMetric))
+	}
+
 	if fleet.AddrEnabled(*uiListen) {
 		ui := &fleet.Server{Store: s.fleet}
 		go func() {

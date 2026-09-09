@@ -4,6 +4,56 @@ All notable changes to the observability agent. Each stage is a phase gate: the
 stage is not complete until the code is production quality, measured, and its
 limitations are recorded.
 
+## Unreleased - Unit economics: cost per order, from telemetry we already send
+
+Cost per business unit, computed at the intake. Three feeds meet here -- a
+published rate, an allocation from agent telemetry, and a denominator only
+the application can supply.
+
+### Added
+
+- **Provider price lists (`internal/pricing`).** Reads the AWS Price List Bulk
+  API: a public, unauthenticated 300 MB CSV per region, streamed and filtered
+  to a few hundred usable rates. Chosen over the Query API because that one
+  needs SigV4 and an IAM policy before anyone can see a number, and with no
+  credentials available none of that signing code could have been tested.
+  Verified live: 1245 instance types from us-east-1 in 18s, every spot-checked
+  price exact.
+- **Cost estimation in the fleet view.** Host cost from (region, instance
+  type), split across containers by measured consumption, weighted 60% CPU /
+  40% memory -- the ratio Datadog publishes, chosen over inventing a different
+  arbitrary one. The share is measured against host CAPACITY, so the remainder
+  is idle: on the demo host two containers accounted for 37.5% of an m5.xlarge
+  and 62.5% was paid for and unused.
+- **Unit cost.** `-unit-metric orders.processed` divides cost by a business
+  denominator. No new ingest surface was needed: the StatsD and OTLP receivers
+  already accept application metrics, so anything the agent forwards can be the
+  denominator. Counters and gauges are handled as the different quantities they
+  are -- a counter yields cost per order, a gauge yields cost per tenant per
+  hour -- and the output says which.
+
+### Fixed
+
+- **Counter and gauge kind is retained through ingest.** Both were folded into
+  the store identically, which was harmless until a denominator needed the
+  distinction: a counter's value is cumulative, and dividing an hourly cost by
+  every order since boot answers nothing. Counter rates now come from the
+  history ring, and a counter reset produces no unit cost rather than a
+  negative or absurd one.
+
+### Not done, deliberately
+
+- **These are LIST prices.** A Reserved Instance, Savings Plan or Spot host
+  costs something else, often half. Every value carries an `Estimate` field
+  rather than only a comment, a missing rate renders as "no rate yet" rather
+  than "$0.00", and an unpriceable host produces no panel at all -- "free" and
+  "unknown" are different facts.
+- **No billing import.** No CUR or FOCUS ingest, no amortisation, no invoice
+  reconciliation. That is the path to finance-grade numbers and it is a
+  separate project.
+- **Idle is not yet split into reserved-but-unused and never-reserved.** That
+  needs Kubernetes requests and limits, which the agent does not collect.
+
 ## Unreleased - Parity with commercial collectors: records, encodings, intake
 
 A survey of how Datadog and Dynatrace actually collect from Ubuntu turned up

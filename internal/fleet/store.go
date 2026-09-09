@@ -104,6 +104,31 @@ type Store struct {
 	hosts  map[string]*host
 	limits Limits
 	now    func() time.Time
+
+	// rates supplies hourly prices. Nil disables cost estimation entirely,
+	// which is the default: an intake with no rate source shows no prices
+	// rather than showing zeros.
+	rates RateSource
+	// unitMetric names the series used as the denominator for cost per unit.
+	// Empty means no unit economics, only cost.
+	unitMetric string
+}
+
+// SetRates installs a rate source, enabling cost estimation. Passing nil
+// disables it again.
+func (s *Store) SetRates(r RateSource) {
+	s.mu.Lock()
+	s.rates = r
+	s.mu.Unlock()
+}
+
+// SetUnitMetric names the series to divide cost by. It is the ONE piece of
+// business knowledge this system cannot infer: nothing in infrastructure
+// telemetry knows which counter represents the thing the business sells.
+func (s *Store) SetUnitMetric(name string) {
+	s.mu.Lock()
+	s.unitMetric = strings.TrimSpace(name)
+	s.mu.Unlock()
 }
 
 // New returns an empty Store. A zero Limits uses the defaults.
@@ -148,6 +173,13 @@ type series struct {
 	// non-core series -- has this one ever reported twice? -- which is the
 	// cheapest available test for "worth drawing"; see observeLocked.
 	seen int
+	// counter records which side of the envelope the series arrived on.
+	// Gauges and counters were folded in identically until a unit-cost
+	// denominator needed the distinction: "orders processed" is a cumulative
+	// counter whose VALUE is meaningless as a rate, and dividing cost by it
+	// would compare an hourly cost against every order since the process
+	// started.
+	counter bool
 }
 
 // envelope mirrors the obsagent.v1 wire shape. The fleet store parses the body
@@ -301,10 +333,10 @@ func (s *Store) Ingest(signal string, body []byte) error {
 		h.batchMetrics++
 		if env.Metrics != nil {
 			for _, m := range env.Metrics.Gauges {
-				s.observeLocked(h, m, ts)
+				s.observeLocked(h, m, ts, false)
 			}
 			for _, m := range env.Metrics.Counters {
-				s.observeLocked(h, m, ts)
+				s.observeLocked(h, m, ts, true)
 			}
 		}
 	}
@@ -312,7 +344,7 @@ func (s *Store) Ingest(signal string, body []byte) error {
 }
 
 // observeLocked records one metric point. The caller holds s.mu.
-func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time) {
+func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time, isCounter bool) {
 	if m.Name == "" {
 		return
 	}
@@ -333,7 +365,7 @@ func (s *Store) observeLocked(h *host, m metricJSON, ts time.Time) {
 			h.dropped++
 			return
 		}
-		ser = &series{name: m.Name, attrs: copyAttrs(m.Attributes)}
+		ser = &series{name: m.Name, attrs: copyAttrs(m.Attributes), counter: isCounter}
 		h.series[key] = ser
 	}
 	ser.value = m.Value

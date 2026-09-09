@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -87,6 +88,11 @@ type Summary struct {
 	InvCounts    map[string]int `json:"inventory_counts,omitempty"`
 	LogCount     int            `json:"log_count"`
 	SpanCount    int            `json:"span_count"`
+
+	// Cost is nil when the host cannot be priced at all -- no region, no
+	// instance type, or no rate source configured. Nil and zero mean very
+	// different things here and must not be conflated.
+	Cost *HostCost `json:"cost,omitempty"`
 }
 
 // Fleet is the whole-fleet document the list page polls.
@@ -269,6 +275,10 @@ func (s *Store) summarise(h *host, now time.Time) Summary {
 			sum.DiskPct = ser.value * 100
 		}
 	}
+	// Cost is computed at view time rather than stored: a rate can arrive
+	// minutes after the metrics it prices, and a value cached at ingest would
+	// stay wrong until the host next reported.
+	sum.Cost = s.costFor(context.Background(), h, now)
 	return sum
 }
 
