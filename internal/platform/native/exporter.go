@@ -77,6 +77,10 @@ type Exporter struct {
 	invEdges         int
 	invSeq           int64
 	droppedInventory int64
+	// lastInventory is when the inventory was last actually posted, and
+	// skippedInventory counts the posts suppressed because nothing changed.
+	lastInventory    time.Time
+	skippedInventory int64
 
 	failures  int
 	openUntil time.Time
@@ -306,11 +310,43 @@ func (e *Exporter) exportInventory(ctx context.Context, now time.Time) {
 	if !ok {
 		return
 	}
-	body := encodeInventory(e.cfg.Resource, e.foldInventory(s.EventSnapshot()), now)
+	inv, changed := e.foldInventory(s.EventSnapshot())
+
+	// An inventory is SLOW-MOVING STATE sharing a tick with fast-moving
+	// metrics. Metrics have to go every cycle; a list of what exists on the
+	// host does not, and sending it anyway was 98% of the bytes this exporter
+	// produced -- 711 entities re-sent every five seconds.
+	//
+	// It is still re-sent periodically even when nothing changed, because the
+	// payload is full state and that is what lets a consumer which missed a
+	// post, restarted, or lost its store recover without the agent knowing
+	// anything went wrong.
+	if !changed && !e.inventoryResendDue(now) {
+		e.mu.Lock()
+		e.skippedInventory++
+		e.mu.Unlock()
+		return
+	}
+
+	body := encodeInventory(e.cfg.Resource, inv, now)
 	if len(body) == 0 {
 		return
 	}
+	e.mu.Lock()
+	e.lastInventory = now
+	e.mu.Unlock()
 	e.post(ctx, signalInvent, body)
+}
+
+// inventoryResendDue reports whether the unchanged inventory should go out
+// again anyway, to keep a consumer self-healing.
+func (e *Exporter) inventoryResendDue(now time.Time) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.lastInventory.IsZero() {
+		return true // nothing has been sent yet
+	}
+	return now.Sub(e.lastInventory) >= inventoryResendInterval
 }
 
 func (e *Exporter) exportLogs(ctx context.Context, now time.Time) {

@@ -4,6 +4,36 @@ All notable changes to the observability agent. Each stage is a phase gate: the
 stage is not complete until the code is production quality, measured, and its
 limitations are recorded.
 
+## Unreleased - Stop re-sending an inventory that has not changed
+
+### Fixed
+
+- **The inventory was shipped complete on every metrics tick.** All four
+  signals export on the same tick, so a full entity set went out every five
+  seconds. Measured on a real archive: 53 consecutive exports carried 37,683
+  events describing **711 distinct objects** -- 1.9% of the traffic said
+  anything new. Eight days of two hosts produced an 11.8 GB inventory archive
+  of which roughly 240 MB was unique.
+
+  `foldInventory` now reports whether the fold changed anything, and
+  `exportInventory` posts only when it did -- or once an hour regardless. The
+  hourly resend is deliberate and mirrors the discovery module's own reasoning
+  ("one hour of maximum staleness for a consumer that missed an event"): the
+  payload is FULL STATE, and that is what lets a consumer which restarted or
+  lost its store recover without the agent knowing anything went wrong. The
+  previous behaviour offered the same guarantee 720 times an hour.
+
+  Suppressed posts are counted rather than silent.
+
+### Not done, deliberately
+
+- **The event ring is still not drained.** Draining after export was the
+  obvious fix and it was wrong twice over: the agent's local UI reads the same
+  ring to show recent discovery activity (`EventSnapshotter` exists for exactly
+  that, and says so), and a drained ring would turn full-state sync into
+  change-only sync, losing the self-healing property. The fix is to notice
+  there is nothing to say, not to forget what was said.
+
 ## Unreleased - Unit economics: cost per order, from telemetry we already send
 
 Cost per business unit, computed at the intake. Three feeds meet here -- a

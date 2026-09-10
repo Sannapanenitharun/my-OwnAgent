@@ -3,6 +3,7 @@ package native
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/obsagent/observability-agent/internal/platform"
 )
@@ -37,6 +38,15 @@ const maxInventoryEntities = 4096
 // name.
 const maxInventoryRelations = 8192
 
+// inventoryResendInterval is how often an UNCHANGED inventory is sent again.
+//
+// It mirrors the discovery module's own resync reasoning -- "one hour of
+// maximum staleness for a consumer that missed an event; twelve resyncs a day
+// is a negligible cost and a strong guarantee". The exporter previously
+// re-sent it on every metrics tick, which is 720 times an hour and the same
+// guarantee.
+const inventoryResendInterval = time.Hour
+
 // entityRecord is one retained entity and the event that last described it.
 type entityRecord struct {
 	ev platform.Event
@@ -46,18 +56,28 @@ type entityRecord struct {
 }
 
 // foldInventory folds entity events into the exporter's retained set and
-// returns the current inventory in a stable order.
+// returns the current inventory in a stable order, plus whether this fold
+// changed anything.
 //
 // Removal is a real delete rather than a tombstone. A tombstone would have to
 // be aged out on some schedule, and an entity the agent has stopped observing
 // is exactly what should stop being reported.
-func (e *Exporter) foldInventory(events []platform.Event) []platform.Event {
+//
+// THE CHANGED FLAG exists because the inventory is FULL STATE, re-derived on
+// every call, and the export loop runs at the metrics cadence. Shipping a
+// complete entity set every few seconds is what it was doing, and on a real
+// host 98% of that traffic announced nothing new -- 711 entities re-sent 12
+// times a minute produced 11.8 GB of archive in eight days. The fix is not to
+// drain the ring (the UI reads it, and full state is what makes the consumer
+// self-healing) but to notice when there is nothing to say.
+func (e *Exporter) foldInventory(events []platform.Event) ([]platform.Event, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if e.inventory == nil {
 		e.inventory = make(map[string]*entityRecord)
 	}
+	changed := false
 	for _, ev := range events {
 		isEntity := strings.HasPrefix(ev.Name, "discovery.entity.")
 		isRelation := strings.HasPrefix(ev.Name, "discovery.relationship.")
@@ -75,6 +95,7 @@ func (e *Exporter) foldInventory(events []platform.Event) []platform.Event {
 			if _, had := e.inventory[key]; had {
 				delete(e.inventory, key)
 				e.countInventory(isRelation, -1)
+				changed = true
 			}
 			continue
 		}
@@ -85,7 +106,16 @@ func (e *Exporter) foldInventory(events []platform.Event) []platform.Event {
 		if rec, ok := e.inventory[key]; ok {
 			// An update keeps its original position, so a container that
 			// changes status does not jump to the end of the list.
-			rec.ev = ev
+			//
+			// Re-announcing an entity identically is the common case and is
+			// NOT a change: the discovery module re-emits its whole set
+			// periodically so a consumer that missed an event recovers, and
+			// treating that as news would defeat the whole purpose of this
+			// flag. Only a different payload counts.
+			if !sameEvent(rec.ev, ev) {
+				rec.ev = ev
+				changed = true
+			}
 			continue
 		}
 		// Past the cap, drop rather than grow. The agent must not turn a host
@@ -97,6 +127,7 @@ func (e *Exporter) foldInventory(events []platform.Event) []platform.Event {
 		e.invSeq++
 		e.inventory[key] = &entityRecord{ev: ev, seq: e.invSeq}
 		e.countInventory(isRelation, 1)
+		changed = true
 	}
 
 	out := make([]*entityRecord, 0, len(e.inventory))
@@ -109,7 +140,34 @@ func (e *Exporter) foldInventory(events []platform.Event) []platform.Event {
 	for i, rec := range out {
 		evs[i] = rec.ev
 	}
-	return evs
+	return evs, changed
+}
+
+// sameEvent reports whether two events say the same thing.
+//
+// The TIMESTAMP is deliberately ignored. Every re-announcement carries a fresh
+// one, so comparing it would make every event look new and the change detection
+// would report exactly what it is there to suppress.
+func sameEvent(a, b platform.Event) bool {
+	if a.Name != b.Name || a.Severity != b.Severity || len(a.Attrs) != len(b.Attrs) {
+		return false
+	}
+	for _, attr := range a.Attrs {
+		found := false
+		for _, other := range b.Attrs {
+			if attr.Key == other.Key {
+				if attr.Value != other.Value {
+					return false
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 // inventoryKey identifies the entity an event describes.

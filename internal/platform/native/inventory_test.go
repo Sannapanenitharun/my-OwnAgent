@@ -42,7 +42,7 @@ func TestStableEntitiesSurviveChurn(t *testing.T) {
 		entityEvent("discovery.entity.discovered", "entity.kind", "filesystem", "mountpoint", "/"),
 		entityEvent("discovery.entity.discovered", "entity.kind", "filesystem", "mountpoint", "/boot"),
 	}
-	if got := len(e.foldInventory(first)); got != 4 {
+	if got := len(foldSet(e, first)); got != 4 {
 		t.Fatalf("first cycle shipped %d entities, want 4", got)
 	}
 
@@ -54,7 +54,7 @@ func TestStableEntitiesSurviveChurn(t *testing.T) {
 			"entity.kind", "network_endpoint", "protocol", "tcp",
 			"address", "10.0.0.1", "port", string(rune('a'+i%26))+"000"))
 	}
-	got := kindsOf(e.foldInventory(churn))
+	got := kindsOf(foldSet(e, churn))
 
 	if got["filesystem"] != 2 {
 		t.Errorf("filesystems = %d, want 2 -- they were evicted by churn", got["filesystem"])
@@ -66,11 +66,11 @@ func TestStableEntitiesSurviveChurn(t *testing.T) {
 
 func TestRemovedEntityStopsBeingReported(t *testing.T) {
 	e := New(nil, Config{})
-	e.foldInventory([]platform.Event{
+	foldOnly(e, []platform.Event{
 		entityEvent("discovery.entity.discovered", "entity.kind", "container", "container_id", "abc"),
 		entityEvent("discovery.entity.discovered", "entity.kind", "container", "container_id", "def"),
 	})
-	out := e.foldInventory([]platform.Event{
+	out := foldSet(e, []platform.Event{
 		entityEvent("discovery.entity.removed", "entity.kind", "container", "container_id", "abc"),
 	})
 	if len(out) != 1 {
@@ -86,12 +86,12 @@ func TestRepeatedAnnouncementIsAnUpdateNotADuplicate(t *testing.T) {
 	// in place; folding it as new is how 21 containers became 42.
 	e := New(nil, Config{})
 	for i := 0; i < 5; i++ {
-		e.foldInventory([]platform.Event{
+		foldOnly(e, []platform.Event{
 			entityEvent("discovery.entity.discovered",
 				"entity.kind", "container", "container_id", "abc", "status", "Up 3 days"),
 		})
 	}
-	out := e.foldInventory(nil)
+	out := foldSet(e, nil)
 	if len(out) != 1 {
 		t.Fatalf("inventory = %d, want 1", len(out))
 	}
@@ -103,11 +103,11 @@ func TestEnrichmentRenamesRatherThanDuplicating(t *testing.T) {
 	// container.
 	e := New(nil, Config{})
 	id := "197a675287225cafa1e9515ce3aa523f2fe04710a3aef8c72b4b7e6c80359381"
-	e.foldInventory([]platform.Event{
+	foldOnly(e, []platform.Event{
 		entityEvent("discovery.entity.discovered",
 			"entity.kind", "container", "container_id", id, "name", id),
 	})
-	out := e.foldInventory([]platform.Event{
+	out := foldSet(e, []platform.Event{
 		entityEvent("discovery.entity.changed",
 			"entity.kind", "container", "container_id", id, "name", "grafana"),
 	})
@@ -121,13 +121,13 @@ func TestResolvedEntityIDIsPreferredAsTheKey(t *testing.T) {
 	// agent agrees on, so two events carrying the same target id are the same
 	// entity even if their other attributes differ.
 	e := New(nil, Config{})
-	e.foldInventory([]platform.Event{
+	foldOnly(e, []platform.Event{
 		entityEvent("discovery.entity.discovered",
 			"entity.kind", "filesystem", "entity.target.id", "fs-1", "mountpoint", "/mnt/a"),
 		entityEvent("discovery.entity.changed",
 			"entity.kind", "filesystem", "entity.target.id", "fs-1", "mountpoint", "/mnt/b"),
 	})
-	if out := e.foldInventory(nil); len(out) != 1 {
+	if out := foldSet(e, nil); len(out) != 1 {
 		t.Errorf("inventory = %d, want 1 entity under one target id", len(out))
 	}
 }
@@ -142,7 +142,7 @@ func TestInventoryIsBoundedAndTheOverflowIsCounted(t *testing.T) {
 		evs = append(evs, entityEvent("discovery.entity.discovered",
 			"entity.kind", "process", "name", "p", "pid", strings.Repeat("x", 1)+itoa(i)))
 	}
-	out := e.foldInventory(evs)
+	out := foldSet(e, evs)
 	if len(out) != maxInventoryEntities {
 		t.Errorf("inventory = %d, want the cap of %d", len(out), maxInventoryEntities)
 	}
@@ -159,7 +159,7 @@ func TestNonEntityEventsAreIgnored(t *testing.T) {
 	// The event buffer is shared with every other module. Only entity events
 	// are inventory.
 	e := New(nil, Config{})
-	out := e.foldInventory([]platform.Event{
+	out := foldSet(e, []platform.Event{
 		entityEvent("discovery.snapshot", "entity_count", "12"),
 		entityEvent("discovery.relationship.discovered", "relation", "runs_service"),
 		entityEvent("agent.module.started", "module", "logs"),
@@ -180,10 +180,10 @@ func TestShippedOrderIsStableAcrossCycles(t *testing.T) {
 		entityEvent("discovery.entity.discovered", "entity.kind", "filesystem", "mountpoint", "/var"),
 		entityEvent("discovery.entity.discovered", "entity.kind", "host", "hostname", "h"),
 	}
-	e.foldInventory(evs)
-	want := keysOf(e.foldInventory(nil))
+	foldOnly(e, evs)
+	want := keysOf(foldSet(e, nil))
 	for i := 0; i < 20; i++ {
-		if got := keysOf(e.foldInventory(nil)); got != want {
+		if got := keysOf(foldSet(e, nil)); got != want {
 			t.Fatalf("order changed between cycles:\n %s\n %s", want, got)
 		}
 	}
@@ -207,4 +207,15 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// foldSet and foldOnly adapt foldInventory's two results for tests that care
+// only about the resulting set. The change flag has its own tests.
+func foldSet(e *Exporter, evs []platform.Event) []platform.Event {
+	out, _ := e.foldInventory(evs)
+	return out
+}
+
+func foldOnly(e *Exporter, evs []platform.Event) {
+	_, _ = e.foldInventory(evs)
 }
